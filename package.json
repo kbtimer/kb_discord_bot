@@ -1,0 +1,26 @@
+{
+  "name": "cokbbot",
+  "version": "1.0.0",
+  "description": "discord bot for creating and running online knowledge bowl tournaments",
+  "main": "tournament.js",
+  "scripts": {
+    "test": "node tournament.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kbtimer/kb_discord_bot.git"
+  },
+  "keywords": [
+    "discord"
+  ],
+  "author": "Karan Gurazada, adapted by Casey Smith",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kbtimer/kb_discord_bot/issues"
+  },
+  "homepage": "https://github.com/kbtimer/kb_discord_bot#readme",
+  "dependencies": {
+    "discord.js": "^12.3.1",
+    "parse-url": "^5.0.2"
+  }
+}
