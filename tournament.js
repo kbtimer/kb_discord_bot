@@ -524,7 +524,7 @@ var randomColor = function() {
 	var s = Math.random();
 	//bias saturation away from 0
 	s = Math.sqrt(Math.sqrt(s));
-	var v = Math.random()*0.67 + 0.33;
+	var v = Math.random()*0.5 + 0.5;
 	return hsvToRgb(h, s, v);
 }
 
@@ -721,6 +721,9 @@ var processCommand = async function (command, message) {
   } else if (command.indexOf('.e') === 0 && hasRole(message.member, 'Control Room')) {
 		try {
 	    var channels = mentions.channels;
+			if(channels.length == 0) {
+				throw "empty empty.";
+			}
 			//check that they all look like competition rooms
 			for(var i=0; i<channels.length; i++) {
 				if(channels[i].parent.children.array().length != 2) {
