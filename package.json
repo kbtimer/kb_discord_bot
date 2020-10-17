@@ -1,5 +1,5 @@
 {
-  "name": "cokbbot",
+  "name": "ckbbot",
   "version": "1.0.0",
   "description": "discord bot for creating and running online knowledge bowl tournaments",
   "main": "tournament.js",
