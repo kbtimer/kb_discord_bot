@@ -576,6 +576,10 @@ var createTeam = async function (guild, name) {
 	});
 	var loungeText = await createRoom(guild, name + ' Lounge', true);
 	await add(teamRole, loungeText.parent);
+	//Overwrite default READ_MESSAGE_HISTORY from add function
+	await loungeText.parent.updateOverwrite(teamRole, {
+		'READ_MESSAGE_HISTORY': true
+	});
 	await addToHub(guild, teamRole);
 
 	return name;
