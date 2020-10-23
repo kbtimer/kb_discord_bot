@@ -28,7 +28,7 @@ var helpSections = {
   },
 	'n': {
 		name: 'New Team[s]',
-		value: 'This command can only by run by users with the Control Room role.  Specify a list of teams names to create in double quotation marks, separated by spaces.\nExample bot-style usage: `.n "AHS A" "AHS B" "BHS A" "BHS B"`\nExample NL-style usage: `.new-teams "AHS A" "AHS B" "BHS A" "BHS B"`'
+		value: 'This command can only by run by users with the Control Room role.  Specify a list of teams names to create in double quotation marks, separated by spaces.\nExample bot-style usage: `.n "AHS-A" "AHS-B" "BHS-A" "BHS-B"`\nExample NL-style usage: `.new-teams "AHS-A" "AHS-B" "BHS-A" "BHS-B"`'
 	},
   'm': {
 		name: 'Mass Create Teams',
