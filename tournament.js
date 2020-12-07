@@ -536,6 +536,28 @@ var hsvToRgb = function (h, s, v) {
 					Math.floor(Math.max(Math.min(f(1, h, s, v) * 256, 255), 0))];
 }
 
+//all in range [0,1]
+var hsvToRgb2 = function (h, s, v) {
+	var r, g, b, i, f, p, q, t;
+	i = Math.floor(h*6);
+	f = h * 6 - i;
+	p = v * (1 - s);
+	q = v * (1 - f * s);
+	t = v * (1 - (1 - f) * s);
+	switch (i % 6) {
+	case 0: r = v, g = t, b = p; break;
+	case 1: r = q, g = v, b = p; break;
+  case 2: r = p, g = v, b = t; break;
+  case 3: r = p, g = q, b = v; break;
+  case 4: r = t, g = p, b = v; break;
+  case 5: r = v, g = p, b = q; break;
+  }
+	return [Math.round(r * 255),
+					Math.round(g * 255),
+					Math.round(b * 255)];
+
+}
+
 var randomColor = function() {
 	//Make a color in hsl and convert to rgb
 	//Maintain a minimum brightness and avoid colors with hues
@@ -545,7 +567,7 @@ var randomColor = function() {
 	//bias saturation away from 0, but max it out at 0.9
 	s = Math.sqrt(Math.sqrt(s))*0.9;
 	var v = Math.random()*0.25 + 0.75;
-	return hsvToRgb(h, s, v);
+	return hsvToRgb2(h, s, v);
 }
 
 var addToHub = async function(guild, role) {
