@@ -544,7 +544,7 @@ var randomColor = function() {
 	var s = Math.random();
 	//bias saturation away from 0
 	s = Math.sqrt(Math.sqrt(s));
-	var v = Math.random()*0.5 + 0.5;
+	var v = Math.random()*0.35 + 0.65;
 	return hsvToRgb(h, s, v);
 }
 
