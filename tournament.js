@@ -563,11 +563,10 @@ var randomColor = function() {
 	//Maintain a minimum brightness and avoid colors with hues
 	//  between 240 and 0, since those are for staff/admin
 	var h = Math.random();//Math.pow(Math.random()*2.0 - 1.0, 1.0/3.0)/3.0 + 1.0/3.0;
-	var s = Math.random();
-	//bias saturation away from 0, but max it out at 0.9
-	s = Math.sqrt(s)*0.9;
+	var s = Math.random()*0.6 + 0.3;
 	var v = Math.random()*0.25 + 0.75;
-	return hsvToRgb2(h, s, v);
+	var color = hsvToRgb2(h, s, v);
+	return color;
 }
 
 var addToHub = async function(guild, role) {
@@ -1053,7 +1052,11 @@ client.on('message', async function (message) {
 client.login(config.BOT_TOKEN);
 client.on('ready', function () {
   for (var guild of client.guilds.cache.array()) {
-		console.log(guild.name + ' ' + guild.owner.user.tag);
+		try {
+			console.log(guild.name + ' ' + guild.owner.user.tag);
+		} catch (e) {
+			console.log(guild.name);
+		}
   }
   client.user.setActivity('.help', {type: 'LISTENING'}).then(function () {
 		console.log('up and running!');
