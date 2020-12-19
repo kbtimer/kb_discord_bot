@@ -240,6 +240,10 @@ var init = async function (guild) {
   for (var channel of existingChannels) {
 		await channel.delete();
   }
+	const basePermissions = ['CHANGE_NICKNAME', 'VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY', 'USE_EXTERNAL_EMOJIS', 'ADD_REACTIONS', 'CONNECT', 'SPEAK', 'USE_VAD'];
+	const  staffPermissions = [].concat(basePermissions, ['STREAM', 'MANAGE_MESSAGES', 'EMBED_LINKS', 'ATTACH_FILES', 'MENTION_EVERYONE', 'MUTE_MEMBERS', 'MANAGE_NICKNAMES', 'MOVE_MEMBERS']);
+	const coachPermissions = staffPermissions;
+	guild.roles.everyone.setPermissions(basePermissions);
   var controlRoomRole = await guild.roles.create({
 		data: {
 	    name: 'Control Room',
@@ -255,6 +259,7 @@ var init = async function (guild) {
 	    name: 'Staff',
 	    color: 'BLUE',
 	    hoist: true,
+			permissions: staffPermissions,
 	    mentionable: true,
 	    position: 1
 		}
@@ -273,6 +278,7 @@ var init = async function (guild) {
 	    name: 'Coach',
 	    color: 'RED',
 	    hoist: true,
+			permissions: coachPermissions,
 	    mentionable: true,
 	    position: 1
 		}
