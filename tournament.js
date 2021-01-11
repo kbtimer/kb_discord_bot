@@ -58,6 +58,10 @@ var helpSections = {
 		name: 'Paint a Team',
 		value: 'This command can be run by Control Room or Staff roles.  It changes the color of a team role.\nExample bot-style usage: `.p @Team1`\nExample NL-style usage: `.paint @Team1`'
 	},
+	'w': {
+		name: 'Written Secret Code',
+		value: 'This command can be run by anyone in a text channel with lounge in the name.  It outputs a secret code for the written.\nExample bot-style usage: `.w`\nExample NL-style usage: `.written-code`'
+	},
   'h': {
 		name: 'Display This Help',
 		value: 'Example bot-style usage: `.h`\nExample NL-style usage: `.help`'
@@ -381,7 +385,7 @@ var init = async function (guild) {
 }
 
 var help = function (channel, sections) {
-  sections = sections || ['i', 'c', 'd', 'g', 'n', 'm', 'a', 'r', 't', 'e', 'p', 'h'];
+  sections = sections || ['i', 'c', 'd', 'g', 'n', 'm', 'a', 'r', 't', 'e', 'p', 'w', 'h'];
   var helpMessage = {
 		color: '#29bb9c', // same as discord aqua
 		title: 'CKB Bot Help',
