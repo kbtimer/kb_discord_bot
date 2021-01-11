@@ -652,405 +652,437 @@ var confirm = async function (message, prompt, force, failCallback, successCallb
 }
 
 var processCommand = async function (command, message) {
-  // var force = command.indexOf('--force') >= 0 ? 1 : 0;
-  var force = false;
-  var forceIndex = command.indexOf('--force');
-  if (forceIndex > -1) {
-		force = true;
-		command = command.replace('--force', '');
-  }
-	//If we're here, we know that the caller is Control Room, Staff, or owner, so if all of those can
-	//  call a command, we don't have to bother checking roles
-  var mentions = getMentions(command, message.guild);
-  if (command.indexOf('.a') === 0) {
-		try {
-	    var roles = mentions.roles;
-	    var role = roles[0];
-	    var channels = mentions.channels;
-	    var to = channels[0].parent;
-			if(to.name == "Control Room" || to.name == "Hub") {
-				message.channel.send('Cannot add or remove from "' + to.name + '"');
-				throw 'Cannot add or remove from "' + to.name + '"';
-			}
-			var pos = await coachPosition(message.guild);
-			if(pos < 0) {
-				message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
-				throw 'Coach role deleted';
-			}
-			if(role.position >= pos) {
-				message.channel.send('Cannot add with non-team role ' + role.toString());
-				throw 'Cannot add with non-team role ' + role.toString();
-			}
-	    confirm(message, 'Are you sure you want to add team ' + role.toString() + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The addition is cancelled.');
-	    }, function () {
-				add(role, to).then(function () {
-					message.channel.send('Team ' + role.toString() + ' has been added to room "' + to.name + '."');
-				}).catch(function (error) {
-					console.error(error);
-					help(message.channel, ['a']);
-				});
-	    });
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['a']);
+
+	//These are commands that can be run by anyone
+	if (command.indexOf('.w') === 0 && message.channel.name.indexOf("lounge") > -1) {
+		//Give them a secret code for their written
+		var id1 = message.channel.id;
+		var id2 = message.guild.id;
+		var val1 = parseInt(id1.substring(id1.length-6, id1.length));
+		var val2 = parseInt(id2.substring(id2.length-6, id2.length));
+
+
+		//message.channel.send('Channel ID:' + message.channel.id);
+		//message.channel.send('Guild ID:' + message.guild.id);
+
+		//message.channel.send('Channel ID truncated: ' + val1);
+		//message.channel.send('Guild ID truncated: ' + val2);
+
+		var date1 = new Date("01/01/2000");
+		var today = new Date();
+		var difference_in_time = today.getTime() - date1.getTime();
+		var difference_in_days = parseInt(difference_in_time / (1000*3600*24));
+		//message.channel.send('Today num: ' + difference_in_days);
+
+		//message.channel.send('Combined num: ' + (val1 + val2 + difference_in_days));
+
+		var code = ((val1 + val2 + difference_in_days) % 10000 + "").padStart(4, "0");
+
+
+		message.channel.send('Hello ' + message.channel.name + "! Your secret code for today's written is " + code);
+
+	} else if(hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.member === message.channel.guild.owner) {
+
+		// var force = command.indexOf('--force') >= 0 ? 1 : 0;
+		var force = false;
+		var forceIndex = command.indexOf('--force');
+		if (forceIndex > -1) {
+			force = true;
+			command = command.replace('--force', '');
 		}
-  } else if (command.indexOf('.r') === 0) {
-		try {
-	    var roles = mentions.roles;
-	    var role = roles[0];
-	    var channels = mentions.channels;
-	    var from = channels[0].parent;
-			if(from.name == "Control Room" || from.name == "Hub") {
-				message.channel.send('Cannot add or remove from "' + from.name + '"');
-				throw 'Cannot add or remove from "' + from.name + '"';
-			}
-			var pos = await coachPosition(message.guild);
-			if(pos < 0) {
-				message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
-				throw 'Coach role deleted';
-			}
-			if(role.position >= pos) {
-				message.channel.send('Cannot remove with non-team role ' + role.toString());
-				throw 'Cannot remove with non-team role ' + role.toString();
-			}
-	    confirm(message, 'Are you sure you want to remove team ' + role.toString() + ' from room "' + from.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The removal is cancelled.');
-	    }, function	() {
-				remove(role, from).then(function () {
-					message.channel.send('Team ' + role.toString() + ' has been removed from room "' + from.name + '."');
-				}).catch(function (error) {
-					console.error(error);
-					help(message.channel, ['r']);
-				});
-	    });
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['r']);
-		}
-  } else if (command.indexOf('.t') === 0) {
-		try {
-	    var roles = mentions.roles;
-	    var role = roles[0];
-	    var channels = mentions.channels;
-	    var from = channels[0].parent;
-	    var to = channels[1].parent;
-			if(to.name == "Control Room" || to.name == "Hub") {
-				message.channel.send('Cannot add or remove from "' + to.name + '"');
-				throw 'Cannot add or remove from "' + to.name + '"';
-			}
-			if(from.name == "Control Room" || from.name == "Hub") {
-				message.channel.send('Cannot add or remove from "' + from.name + '"');
-				throw 'Cannot add or remove from "' + from.name + '"';
-			}
-			var pos = await coachPosition(message.guild);
-			if(pos < 0) {
-				message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
-				throw 'Coach role deleted';
-			}
-			if(role.position >= pos) {
-				message.channel.send('Cannot transfer non-team role ' + role.toString());
-				throw 'Cannot transfer non-team role ' + role.toString();
-			}
-	    confirm(message, 'Are you sure you want to transfer team ' + role.toString() + ' from room "' + from.name + '" to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The transfer is cancelled.');
-	    }, function	() {
-				remove(role, from).then(function () {
+
+
+		//If we're here, we know that the caller is Control Room, Staff, or owner, so if all of those can
+		//  call a command, we don't have to bother checking roles
+		var mentions = getMentions(command, message.guild);
+		if (command.indexOf('.a') === 0) {
+			try {
+				var roles = mentions.roles;
+				var role = roles[0];
+				var channels = mentions.channels;
+				var to = channels[0].parent;
+				if(to.name == "Control Room" || to.name == "Hub") {
+					message.channel.send('Cannot add or remove from "' + to.name + '"');
+					throw 'Cannot add or remove from "' + to.name + '"';
+				}
+				var pos = await coachPosition(message.guild);
+				if(pos < 0) {
+					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
+					throw 'Coach role deleted';
+				}
+				if(role.position >= pos) {
+					message.channel.send('Cannot add with non-team role ' + role.toString());
+					throw 'Cannot add with non-team role ' + role.toString();
+				}
+				confirm(message, 'Are you sure you want to add team ' + role.toString() + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. The addition is cancelled.');
+				}, function () {
 					add(role, to).then(function () {
-						message.channel.send('Team ' + role.toString() + ' has been transferred from room "' + from.name + '" to room "' + to.name + '."');
+						message.channel.send('Team ' + role.toString() + ' has been added to room "' + to.name + '."');
+					}).catch(function (error) {
+						console.error(error);
+						help(message.channel, ['a']);
+					});
+				});
+			} catch (e) {
+				console.error(e);
+				help(message.channel, ['a']);
+			}
+		} else if (command.indexOf('.r') === 0) {
+			try {
+				var roles = mentions.roles;
+				var role = roles[0];
+				var channels = mentions.channels;
+				var from = channels[0].parent;
+				if(from.name == "Control Room" || from.name == "Hub") {
+					message.channel.send('Cannot add or remove from "' + from.name + '"');
+					throw 'Cannot add or remove from "' + from.name + '"';
+				}
+				var pos = await coachPosition(message.guild);
+				if(pos < 0) {
+					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
+					throw 'Coach role deleted';
+				}
+				if(role.position >= pos) {
+					message.channel.send('Cannot remove with non-team role ' + role.toString());
+					throw 'Cannot remove with non-team role ' + role.toString();
+				}
+				confirm(message, 'Are you sure you want to remove team ' + role.toString() + ' from room "' + from.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. The removal is cancelled.');
+				}, function	() {
+					remove(role, from).then(function () {
+						message.channel.send('Team ' + role.toString() + ' has been removed from room "' + from.name + '."');
+					}).catch(function (error) {
+						console.error(error);
+						help(message.channel, ['r']);
+					});
+				});
+			} catch (e) {
+				console.error(e);
+				help(message.channel, ['r']);
+			}
+		} else if (command.indexOf('.t') === 0) {
+			try {
+				var roles = mentions.roles;
+				var role = roles[0];
+				var channels = mentions.channels;
+				var from = channels[0].parent;
+				var to = channels[1].parent;
+				if(to.name == "Control Room" || to.name == "Hub") {
+					message.channel.send('Cannot add or remove from "' + to.name + '"');
+					throw 'Cannot add or remove from "' + to.name + '"';
+				}
+				if(from.name == "Control Room" || from.name == "Hub") {
+					message.channel.send('Cannot add or remove from "' + from.name + '"');
+					throw 'Cannot add or remove from "' + from.name + '"';
+				}
+				var pos = await coachPosition(message.guild);
+				if(pos < 0) {
+					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
+					throw 'Coach role deleted';
+				}
+				if(role.position >= pos) {
+					message.channel.send('Cannot transfer non-team role ' + role.toString());
+					throw 'Cannot transfer non-team role ' + role.toString();
+				}
+				confirm(message, 'Are you sure you want to transfer team ' + role.toString() + ' from room "' + from.name + '" to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. The transfer is cancelled.');
+				}, function	() {
+					remove(role, from).then(function () {
+						add(role, to).then(function () {
+							message.channel.send('Team ' + role.toString() + ' has been transferred from room "' + from.name + '" to room "' + to.name + '."');
+						}).catch(function (error) {
+							console.error(error);
+							help(message.channel, ['t']);
+						});
 					}).catch(function (error) {
 						console.error(error);
 						help(message.channel, ['t']);
 					});
-				}).catch(function (error) {
-					console.error(error);
-					help(message.channel, ['t']);
 				});
-	    });
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['t']);
-		}
-  } else if (command.indexOf('.e') === 0 && hasRole(message.member, 'Control Room')) {
-		try {
-	    var channels = mentions.channels;
-			if(channels.length == 0) {
-				throw "empty empty.";
+			} catch (e) {
+				console.error(e);
+				help(message.channel, ['t']);
 			}
-			//check that they all look like competition rooms
-			for(var i=0; i<channels.length; i++) {
-				if(channels[i].parent.children.array().length != 2) {
-					message.channel.send('"' + channels[i].parent.name + '" does not look like a competition room.');
-					throw 'too many channels in a category for empty';
+		} else if (command.indexOf('.e') === 0 && hasRole(message.member, 'Control Room')) {
+			try {
+				var channels = mentions.channels;
+				if(channels.length == 0) {
+					throw "empty empty.";
 				}
+				//check that they all look like competition rooms
+				for(var i=0; i<channels.length; i++) {
+					if(channels[i].parent.children.array().length != 2) {
+						message.channel.send('"' + channels[i].parent.name + '" does not look like a competition room.');
+						throw 'too many channels in a category for empty';
+					}
+				}
+				var clearChannel = function (index) {
+					empty(channels[index].parent).then(function () {
+						message.channel.send('Emptied room "' + channels[index].parent.name + '."');
+						if (index < channels.length - 1) {
+							clearChannel(index + 1);
+						} else {
+							message.channel.send('All specified rooms emptied.');
+						}
+					});
+				}
+				confirm(message, 'Are you sure you want to empty the specified rooms? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. No rooms were emptied.');
+				}, function () {
+					clearChannel(0);
+				});
+			} catch (e) {
+				console.error(e);
+				help(message.channel, ['e']);
 			}
-	    var clearChannel = function (index) {
-				empty(channels[index].parent).then(function () {
-					message.channel.send('Emptied room "' + channels[index].parent.name + '."');
-					if (index < channels.length - 1) {
-						clearChannel(index + 1);
-					} else {
-						message.channel.send('All specified rooms emptied.');
+		} else if (command.indexOf('.i') === 0 && message.member === message.channel.guild.owner) {
+			confirm(message, 'Are you sure you want to initialize the server? Every channel and role currently in the server will be deleted. Confirm by reacting with \:thumbsup:.', force, function () {
+				message.channel.send('No confirmation was received. The initialization is cancelled.');
+			}, function () {
+				init(message.channel.guild, message.channel).catch(function () {
+					help(message.channel, ['i']);
+				});
+			});
+		} else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
+			try {
+				var content = command.substr(command.indexOf(' ') + 1).trim();
+				var names = content.split(/["“”]/g);
+				if (names.length < 2) {
+					help(message.channel, ['c']);
+					return;
+				}
+				confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. The creation is cancelled.');
+				}, function () {
+					for (var i = 1; i < names.length; i += 2) {
+						var name = names[i];
+						createRoom(message.channel.guild, name).then(function (textChannel) {
+							// message.channel.send('Room "' + name + '" has been created.');
+							message.channel.send('Room "' + textChannel.parent.name + '" has been created.');
+						}).catch(function (error) {
+							console.error(error);
+							message.channel.send('Could not be create room "' + textChannel + '". Please try using a different name.');
+							help(message.channel, ['c']);
+						});
 					}
 				});
-	    }
-			confirm(message, 'Are you sure you want to empty the specified rooms? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. No rooms were emptied.');
-	    }, function () {
-				clearChannel(0);
-			});
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['e']);
-		}
-  } else if (command.indexOf('.i') === 0 && message.member === message.channel.guild.owner) {
-		confirm(message, 'Are you sure you want to initialize the server? Every channel and role currently in the server will be deleted. Confirm by reacting with \:thumbsup:.', force, function () {
-	    message.channel.send('No confirmation was received. The initialization is cancelled.');
-		}, function () {
-	    init(message.channel.guild, message.channel).catch(function () {
-				help(message.channel, ['i']);
-	    });
-		});
-  } else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
-		try {
-	    var content = command.substr(command.indexOf(' ') + 1).trim();
-	    var names = content.split(/["“”]/g);
-	    if (names.length < 2) {
-				help(message.channel, ['c']);
-				return;
-	    }
-	    confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The creation is cancelled.');
-	    }, function () {
-				for (var i = 1; i < names.length; i += 2) {
-					var name = names[i];
-					createRoom(message.channel.guild, name).then(function (textChannel) {
-						// message.channel.send('Room "' + name + '" has been created.');
-						message.channel.send('Room "' + textChannel.parent.name + '" has been created.');
-					}).catch(function (error) {
-						console.error(error);
-						message.channel.send('Could not be create room "' + textChannel + '". Please try using a different name.');
-						help(message.channel, ['c']);
-					});
-				}
-	    });
-		} catch (e) {
-			console.error(e);
-			help(message.channel, ['c']);
-		}
-		/*
-			} else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
-			// todo add the ability to create multiple rooms at once
-			try {
-			var name = command.substr(command.indexOf(' ') + 1).trim();
-			if (name.length < 90) {
-			confirm(message, 'Are you sure you want to create room "' + name + '"? Confirm by reacting with \:thumbsup:.', function () {
-			message.channel.send('No confirmation was received. The creation is cancelled.');
-			}, function () {
-			createRoom(message.channel.guild, name).then(function (textChannel) {
-			// message.channel.send('Room "' + name + '" has been created.');
-			message.channel.send('Room "' + name + '" has been created.');
-			}).catch(function (error) {
-			console.error(error);
-			message.channel.send('Room "' + name + '" could not be created. Please try using a different name.');
-			help(message.channel, ['c']);
-			});
-			});
-			} else {
-			message.channel.send('The room name must be less than 90 characters.');
-			}
 			} catch (e) {
-			console.error(e);
-			help(message.channel, ['c']);
+				console.error(e);
+				help(message.channel, ['c']);
 			}
-		*/
-	} else if (command.indexOf('.p') === 0) {
-		try {
-	    var roles = mentions.roles;
-	    var role = roles[0];
-			var pos = await coachPosition(message.guild);
-			if(pos < 0) {
-				message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
-				throw 'Coach role deleted';
-			}
-			if(role.position >= pos) {
-				message.channel.send('Cannot change color of non-team role ' + role.toString());
-				throw 'Cannot paint with non-team role ' + role.toString();
-			}
-			confirm(message, 'Are you sure you want to paint the specified team a new color? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received.  The painting is canceled.');
-			}, function () {
-				recolor(role).then(function () {
-					message.channel.send('Team ' + role.toString() + ' has been given a new color."');
+			/*
+				} else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
+				// todo add the ability to create multiple rooms at once
+				try {
+				var name = command.substr(command.indexOf(' ') + 1).trim();
+				if (name.length < 90) {
+				confirm(message, 'Are you sure you want to create room "' + name + '"? Confirm by reacting with \:thumbsup:.', function () {
+				message.channel.send('No confirmation was received. The creation is cancelled.');
+				}, function () {
+				createRoom(message.channel.guild, name).then(function (textChannel) {
+				// message.channel.send('Room "' + name + '" has been created.');
+				message.channel.send('Room "' + name + '" has been created.');
 				}).catch(function (error) {
-					console.error(error);
-					help(message.channel, ['p']);
+				console.error(error);
+				message.channel.send('Room "' + name + '" could not be created. Please try using a different name.');
+				help(message.channel, ['c']);
 				});
-			});
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['p']);
-		}
-  } else if (command.indexOf('.d') === 0 && hasRole(message.member, 'Control Room')) {
-		try {
-	    var channels = mentions.channels;
-			//check that they all look like competition rooms
-			for(var i=0; i<channels.length; i++) {
-				if(channels[i].parent.children.array().length != 2) {
-					message.channel.send('"' + channels[i].parent.name + '" does not look like a competition room.  Please delete it manually.');
-					throw 'too many channels in a category for delete';
+				});
+				} else {
+				message.channel.send('The room name must be less than 90 characters.');
 				}
-			}
-	    confirm(message, 'Are you sure you want to delete the specified room[s]? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The deletion is cancelled.');
-	    }, function () {
-				for (var text of channels) {
-					deleteRoom(text).then(function (name) {
-						message.channel.send('Room "' + name + '" has been deleted.');
+				} catch (e) {
+				console.error(e);
+				help(message.channel, ['c']);
+				}
+			*/
+		} else if (command.indexOf('.p') === 0) {
+			try {
+				var roles = mentions.roles;
+				var role = roles[0];
+				var pos = await coachPosition(message.guild);
+				if(pos < 0) {
+					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
+					throw 'Coach role deleted';
+				}
+				if(role.position >= pos) {
+					message.channel.send('Cannot change color of non-team role ' + role.toString());
+					throw 'Cannot paint with non-team role ' + role.toString();
+				}
+				confirm(message, 'Are you sure you want to paint the specified team a new color? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received.  The painting is canceled.');
+				}, function () {
+					recolor(role).then(function () {
+						message.channel.send('Team ' + role.toString() + ' has been given a new color."');
 					}).catch(function (error) {
 						console.error(error);
-						message.channel.send('Room "' + text + '" could not be deleted. Please delete it manually.')
-						help(message.channel, ['d']);
+						help(message.channel, ['p']);
 					});
-				}
-	    });
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['d']);
-		}
-  /*} else if (command.indexOf('.f') === 0 && hasRole(message.member, 'Control Room')) {
-		try {
-	    var teams = mentions.roles;
-	    confirm(message, 'Are you sure you want to create a finals room with teams ' + teams[0].toString() + ' and ' + teams[1].toString() + '? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The creation is cancelled.');
-	    }, function () {
-				finalsRoom(message.channel.guild, teams[0], teams[1]).then(function (textChannel) {
-					// message.channel.send('A finals room has been created');
-					message.channel.send('A finals room has been created.');
-				}).catch(function (error) {
-					console.error(error);
-					message.channel.send('A finals room could not be created. Please create it manually.');
-					help(message.channel, ['f']);
 				});
-	    });
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['f']);
-		}
-  } else if (command.indexOf('.s') === 0 && hasRole(message.member, 'Control Room')) {
-		try {
-	    var content = command.split(/\s+/g);
-	    var url = parseUrl(content[1]);
-	    var docID = url.pathname.split('/')[3];
-	    var sheetIndex = content[2] || Infinity;
-	    if (sheetIndex === Infinity) {
-				sheetIndex = 0;
-	    }
-	    confirm(message, 'Are you sure you want to generate room schedules from the specified spreadsheet? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The schedule generation is cancelled.');
-	    }, function () {
-				schedule(message.channel.guild, docID, sheetIndex).then(function () {
-					message.channel.send('A schedule was generated.');
-				}).catch(function (error) {
-					console.error(error);
-					message.channel.send('The schedule could not be generated.');
-					help(message.channel, ['s']);
-				});
-	    });
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['s']);
-			}*/
-	} else if (command.indexOf('.n') === 0 && hasRole(message.member, 'Control Room')) {
-		try {
-			var content = command.substr(command.indexOf(' ') + 1).trim();
-			var names = content.split(/["“”]/g);
-			if(names.length < 2) {
-				help(message.channel, ['g', 'n', 'm']);
-				return;
+			} catch (e) {
+				console.error(e);
+				help(message.channel, ['p']);
 			}
-			confirm(message, 'Are you sure you want to create the team[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
+		} else if (command.indexOf('.d') === 0 && hasRole(message.member, 'Control Room')) {
+			try {
+				var channels = mentions.channels;
+				//check that they all look like competition rooms
+				for(var i=0; i<channels.length; i++) {
+					if(channels[i].parent.children.array().length != 2) {
+						message.channel.send('"' + channels[i].parent.name + '" does not look like a competition room.  Please delete it manually.');
+						throw 'too many channels in a category for delete';
+					}
+				}
+				confirm(message, 'Are you sure you want to delete the specified room[s]? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. The deletion is cancelled.');
+				}, function () {
+					for (var text of channels) {
+						deleteRoom(text).then(function (name) {
+							message.channel.send('Room "' + name + '" has been deleted.');
+						}).catch(function (error) {
+							console.error(error);
+							message.channel.send('Room "' + text + '" could not be deleted. Please delete it manually.')
+							help(message.channel, ['d']);
+						});
+					}
+				});
+			} catch (e) {
+				console.error(e);
+				help(message.channel, ['d']);
+			}
+			/*} else if (command.indexOf('.f') === 0 && hasRole(message.member, 'Control Room')) {
+				try {
+				var teams = mentions.roles;
+				confirm(message, 'Are you sure you want to create a finals room with teams ' + teams[0].toString() + ' and ' + teams[1].toString() + '? Confirm by reacting with \:thumbsup:.', force, function () {
 				message.channel.send('No confirmation was received. The creation is cancelled.');
-	    }, function () {
-				for (var i = 1; i < names.length; i += 2) {
-					var name = names[i];
-					createTeam(message.channel.guild, name).then(function (teamName) {
-						message.channel.send('Team "' + teamName + '" has been created.');
+				}, function () {
+				finalsRoom(message.channel.guild, teams[0], teams[1]).then(function (textChannel) {
+				// message.channel.send('A finals room has been created');
+				message.channel.send('A finals room has been created.');
+				}).catch(function (error) {
+				console.error(error);
+				message.channel.send('A finals room could not be created. Please create it manually.');
+				help(message.channel, ['f']);
+				});
+				});
+				} catch (e) {
+				console.error(e);
+				help(message.channel, ['f']);
+				}
+				} else if (command.indexOf('.s') === 0 && hasRole(message.member, 'Control Room')) {
+				try {
+				var content = command.split(/\s+/g);
+				var url = parseUrl(content[1]);
+				var docID = url.pathname.split('/')[3];
+				var sheetIndex = content[2] || Infinity;
+				if (sheetIndex === Infinity) {
+				sheetIndex = 0;
+				}
+				confirm(message, 'Are you sure you want to generate room schedules from the specified spreadsheet? Confirm by reacting with \:thumbsup:.', force, function () {
+				message.channel.send('No confirmation was received. The schedule generation is cancelled.');
+				}, function () {
+				schedule(message.channel.guild, docID, sheetIndex).then(function () {
+				message.channel.send('A schedule was generated.');
+				}).catch(function (error) {
+				console.error(error);
+				message.channel.send('The schedule could not be generated.');
+				help(message.channel, ['s']);
+				});
+				});
+				} catch (e) {
+				console.error(e);
+				help(message.channel, ['s']);
+				}*/
+		} else if (command.indexOf('.n') === 0 && hasRole(message.member, 'Control Room')) {
+			try {
+				var content = command.substr(command.indexOf(' ') + 1).trim();
+				var names = content.split(/["“”]/g);
+				if(names.length < 2) {
+					help(message.channel, ['g', 'n', 'm']);
+					return;
+				}
+				confirm(message, 'Are you sure you want to create the team[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. The creation is cancelled.');
+				}, function () {
+					for (var i = 1; i < names.length; i += 2) {
+						var name = names[i];
+						createTeam(message.channel.guild, name).then(function (teamName) {
+							message.channel.send('Team "' + teamName + '" has been created.');
+						}).catch(function (error) {
+							console.error(error);
+							message.channel.send('Team "' + name + '" could not be created. Please try using a different name.');
+							help(message.channel, ['g', 'n', 'm']);
+						});
+					}
+				});
+			} catch (e) {
+				console.error(e);
+				help(message.channel, ['g', 'n', 'm']);
+			}
+		} else if (command.indexOf('.m') === 0 && hasRole(message.member, 'Control Room')) {
+			try {
+				/*
+					var spaceIndex = command.trim().indexOf(' ');
+					if (spaceIndex === -1) {
+					throw 'No range provided to .m, sending help dialog to channel.';
+					}
+					var range = command.substr(spaceIndex + 1).trim();
+				*/
+				var range = command.split(/\s+/g)[1];
+				confirm(message, 'Are you sure you want to mass create teams from the range ' + range + '? Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. The creation is cancelled.');
+				}, function () {
+					var splitByBracket = range.split('[');
+					var prefix = splitByBracket[0];
+					var splitByEllipsis = splitByBracket[1].split('...');
+					var startIndex = Number(splitByEllipsis[0]);
+					var endIndex = Number(splitByEllipsis[1].substr(0, splitByEllipsis[1].length - 1));
+					massCreateTeams(message.channel.guild, prefix, startIndex, endIndex).then(function () {
+						message.channel.send('The teams were created.');
 					}).catch(function (error) {
 						console.error(error);
-						message.channel.send('Team "' + name + '" could not be created. Please try using a different name.');
+						message.channel.send('The teams could not be created.');
 						help(message.channel, ['g', 'n', 'm']);
 					});
-				}
-	    });
-		} catch (e) {
-			console.error(e);
-			help(message.channel, ['g', 'n', 'm']);
-		}
-  } else if (command.indexOf('.m') === 0 && hasRole(message.member, 'Control Room')) {
-		try {
-	    /*
-	      var spaceIndex = command.trim().indexOf(' ');
-	      if (spaceIndex === -1) {
-	      throw 'No range provided to .m, sending help dialog to channel.';
-	      }
-	      var range = command.substr(spaceIndex + 1).trim();
-	    */
-	    var range = command.split(/\s+/g)[1];
-	    confirm(message, 'Are you sure you want to mass create teams from the range ' + range + '? Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The creation is cancelled.');
-	    }, function () {
-				var splitByBracket = range.split('[');
-				var prefix = splitByBracket[0];
-				var splitByEllipsis = splitByBracket[1].split('...');
-				var startIndex = Number(splitByEllipsis[0]);
-				var endIndex = Number(splitByEllipsis[1].substr(0, splitByEllipsis[1].length - 1));
-				massCreateTeams(message.channel.guild, prefix, startIndex, endIndex).then(function () {
-					message.channel.send('The teams were created.');
-				}).catch(function (error) {
-					console.error(error);
-					message.channel.send('The teams could not be created.');
-					help(message.channel, ['g', 'n', 'm']);
 				});
-	    });
-		} catch (e) {
-	    console.error(e);
-	    help(message.channel, ['g', 'n', 'm']);
-		}
-  /*} else if (command.indexOf('.b') === 0 && hasRole(message.member, 'Control Room')) {
-		var bitrate = NaN;
-		try {
-	    var bitrate = Number(command.substring(command.indexOf(' ')));
-		} catch (e) {}
-		if (!bitrate || bitrate < 8) {
-	    message.channel.send('An invalid bitrate was specified. Please try again.');
-		} else {
-	    confirm(message, 'Are you sure you want to set the bitrate of every voice channel in the server to ' + bitrate + ' kbps? Confirm by reacting with \:thumbsup:.', force, function () {
+			} catch (e) {
+				console.error(e);
+				help(message.channel, ['g', 'n', 'm']);
+			}
+			/*} else if (command.indexOf('.b') === 0 && hasRole(message.member, 'Control Room')) {
+				var bitrate = NaN;
+				try {
+				var bitrate = Number(command.substring(command.indexOf(' ')));
+				} catch (e) {}
+				if (!bitrate || bitrate < 8) {
+				message.channel.send('An invalid bitrate was specified. Please try again.');
+				} else {
+				confirm(message, 'Are you sure you want to set the bitrate of every voice channel in the server to ' + bitrate + ' kbps? Confirm by reacting with \:thumbsup:.', force, function () {
 				message.channel.send('No confirmation was received. The server bitrate remains unchanged.');
-	    }, function () {
+				}, function () {
 				setGuildBitrate(bitrate, message.channel.guild).then(function () {
-					message.channel.send('Every voice channel in the server now has a bitrate of ' + bitrate + ' kbps.');
+				message.channel.send('Every voice channel in the server now has a bitrate of ' + bitrate + ' kbps.');
 				}).catch(function (error) {
-					console.error(error);
-					message.channel.send('The server bitrate could not be changed.');
-					help(message.channel, ['b']);
+				console.error(error);
+				message.channel.send('The server bitrate could not be changed.');
+				help(message.channel, ['b']);
 				});
-	    });
-		}*/
-  } else if (command.indexOf('.h') === 0) {
-		help(message.channel);
-  } else if (command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff'))) {
-		message.channel.send('Use the `.help` command to get started!');
-  }
+				});
+				}*/
+		} else if (command.indexOf('.h') === 0) {
+			help(message.channel);
+		} else if (command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff'))) {
+			message.channel.send('Use the `.help` command to get started!');
+		}
+	}
   return;
 };
 
 client.on('message', async function (message) {
-	if(hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.member === message.channel.guild.owner) {
-		var content = message.content.split('\n');
-		for (var str of content) {
-			await processCommand(str, message);
-		}
+	var content = message.content.split('\n');
+	for (var str of content) {
+		await processCommand(str, message);
 	}
   return;
 });
