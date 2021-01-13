@@ -685,7 +685,11 @@ var processCommand = async function (command, message) {
 		var code = mult.toString().padStart(10, 0);
 		code = code.substring(code.length-6, code.length-2)
 
-		message.channel.send('Hello ' + message.channel.name + "! Your secret code for today's written is " + code);
+		var channelName = message.channel.name;
+
+		var teamName = channelName.substring(0, channelName.indexOf("-lounge"));
+
+		message.channel.send('Hello ' + teamName + "! Your secret code for today's written is " + code);
 
 	} else if(hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.member === message.channel.guild.owner) {
 
