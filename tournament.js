@@ -660,28 +660,30 @@ var processCommand = async function (command, message) {
 	//These are commands that can be run by anyone
 	if (command.indexOf('.w') === 0 && message.channel.name.indexOf("lounge") > -1) {
 		//Give them a secret code for their written
-		var id1 = message.channel.id;
-		var id2 = message.guild.id;
-		var val1 = parseInt(id1.substring(id1.length-6, id1.length));
-		var val2 = parseInt(id2.substring(id2.length-6, id2.length));
+		var id1 = message.channel.id.padStart(10, 1);
+		var id2 = message.guild.id.padStart(10, 1);
+		var val1 = parseInt(id1.substring(id1.length-4, id1.length));
+		var val2 = parseInt(id2.substring(id2.length-4, id2.length));
 
 
-		//message.channel.send('Channel ID:' + message.channel.id);
-		//message.channel.send('Guild ID:' + message.guild.id);
+		//message.channel.send('Channel ID:' + id1);
+		//message.channel.send('Guild ID:' + id2);
+		//message.channel.send('val1: ' + val1);
+		//message.channel.send('val2: ' + val2);
 
-		//message.channel.send('Channel ID truncated: ' + val1);
-		//message.channel.send('Guild ID truncated: ' + val2);
 
 		var date1 = new Date("01/01/2000");
 		var today = new Date();
 		var difference_in_time = today.getTime() - date1.getTime();
-		var difference_in_days = parseInt(difference_in_time / (1000*3600*24));
-		//message.channel.send('Today num: ' + difference_in_days);
+		var val3 = parseInt(difference_in_time / (1000*3600*24));
+		//message.channel.send('Today num: ' + val3);
 
-		//message.channel.send('Combined num: ' + (val1 + val2 + difference_in_days));
+		var mult = val1 * val2 * val3;
 
-		var code = ((val1 + val2 + difference_in_days) % 10000 + "").padStart(4, "0");
+		//message.channel.send('Mult: ' + mult);
 
+		var code = mult.toString().padStart(10, 0);
+		code = code.substring(code.length-6, code.length-2)
 
 		message.channel.send('Hello ' + message.channel.name + "! Your secret code for today's written is " + code);
 
