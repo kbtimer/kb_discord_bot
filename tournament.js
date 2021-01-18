@@ -316,6 +316,7 @@ var init = async function (guild) {
 	});
   var readerRoomChannel = await guild.channels.create('reader-room', {parent: controlRoomCategory});
   var readerRoomVoiceChannel = await guild.channels.create('reader-room-voice', {parent: controlRoomCategory, type: 'voice'});
+  var readerRoomVoice2Channel = await guild.channels.create('reader-room-voice-2', {parent: controlRoomCategory, type: 'voice'});
 
 
 	//Hub is where students get announcements and interact with each other
