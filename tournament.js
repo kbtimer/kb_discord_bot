@@ -8,7 +8,7 @@ const config = require("./config.json");
 var helpSections = {
   'i': {
 		name: 'Initialize Server',
-		value: 'This command __deletes every preexisting channel and role in the server__ and replaces them with a predetermined tournament server skeleton. The CKB Bot role needs to be the highest in the server for this command to run properly. This command can only be run by the server owner.\nExample bot-style usage: `.i`\nExample NL-style usage: `.initialize-server`'
+		value: 'This command __deletes every preexisting channel and role in the server__ and replaces them with a predetermined tournament server skeleton. The CKB Bot role needs to be the highest in the server for this command to run properly. You must specify the name of the server (yours is %ServerName%) to avoid accidentally running the command while on the wrong server.  This command can only be run by the server owner.\nExample bot-style usage: `.i %ServerName%`\nExample NL-style usage: `.initialize-server %ServerName%`'
   },
   'c': {
 		name: 'Create Room[s]',
@@ -394,7 +394,13 @@ var help = function (channel, sections) {
 		fields: []
   };
   for (var section of sections) {
-		helpMessage.fields.push(helpSections[section]);
+		var helpSectionOrig = helpSections[section];
+		var helpSection = {
+			name: helpSectionOrig.name,
+			value: helpSectionOrig.value
+		};
+		helpSection.value = helpSection.value.replace(/\%ServerName\%/g, channel.guild.name)
+		helpMessage.fields.push(helpSection);
   }
   if (sections.length < 9) {
 		helpMessage.description = '';
@@ -859,13 +865,17 @@ var processCommand = async function (command, message) {
 				help(message.channel, ['e']);
 			}
 		} else if (command.indexOf('.i') === 0 && message.member === message.channel.guild.owner) {
-			confirm(message, 'Are you sure you want to initialize the server? Every channel and role currently in the server will be deleted. Confirm by reacting with \:thumbsup:.', force, function () {
-				message.channel.send('No confirmation was received. The initialization is cancelled.');
-			}, function () {
-				init(message.channel.guild, message.channel).catch(function () {
-					help(message.channel, ['i']);
+			if(command.indexOf(message.channel.guild.name) < 0) {
+				help(message.channel, ['i']);
+			} else {
+				confirm(message, 'Are you sure you want to initialize the server ' + message.channel.guild.name + '? Every channel and role currently in the server will be deleted. Confirm by reacting with \:thumbsup:.', force, function () {
+					message.channel.send('No confirmation was received. The initialization is cancelled.');
+				}, function () {
+					init(message.channel.guild, message.channel).catch(function () {
+						help(message.channel, ['i']);
+					});
 				});
-			});
+			}
 		} else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
 			try {
 				var content = command.substr(command.indexOf(' ') + 1).trim();
