@@ -597,22 +597,32 @@ var addToHub = async function(guild, role) {
 
 var createTeam = async function (guild, name) {
 	var color = randomColor();
+	//console.log("Creating role " + name);
 	var teamRole = await guild.roles.create({
 		data: {
 			name: name,
 			color: color,
 			hoist: true,
-			mentionable: true,
-			position: 1
+			mentionable: true//,
+			//position: 1
 		}
 	});
+	//console.log("Created role " + name);
+	//console.log("Creating loung " + name + " Lounge");
 	var loungeText = await createRoom(guild, name + ' Lounge', true);
+	//console.log("Created loung " + name + " Lounge");
+	//console.log("Adding role " + name + " to lounge " + loungeText.name);
 	await add(teamRole, loungeText.parent);
+	//console.log("Added role " + name + " to lounge " + loungeText.name);
 	//Overwrite default READ_MESSAGE_HISTORY from add function
+	//console.log("updating read_message_history for " + name);
 	await loungeText.parent.updateOverwrite(teamRole, {
 		'READ_MESSAGE_HISTORY': true
 	});
+	//console.log("updated read_message_history for " + name);
+	//console.log("Adding " + name + " to hub");
 	await addToHub(guild, teamRole);
+	//console.log("Added " + name + " to hub");
 
 	return name;
 }
@@ -637,6 +647,7 @@ var setGuildBitrate = async function (bitrate, guild) {
 
 var confirm = async function (message, prompt, force, failCallback, successCallback) {
   if (force) {
+
 		message.react('👍');
 		successCallback();
 		return;
@@ -1014,10 +1025,11 @@ var processCommand = async function (command, message) {
 					return;
 				}
 				confirm(message, 'Are you sure you want to create the team[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
-					message.channel.send('No confirmation was received. The creation is cancelled.');
+					message.channel.send('No confirmation was received. The new team creation is cancelled.');
 				}, function () {
 					for (var i = 1; i < names.length; i += 2) {
 						var name = names[i];
+						//console.log("Creating team " + name );
 						createTeam(message.channel.guild, name).then(function (teamName) {
 							message.channel.send('Team "' + teamName + '" has been created.');
 						}).catch(function (error) {

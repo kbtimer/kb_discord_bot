@@ -20,7 +20,7 @@
   },
   "homepage": "https://github.com/kbtimer/kb_discord_bot#readme",
   "dependencies": {
-    "discord.js": "^12.3.1",
+    "discord.js": "^12.5.1",
     "parse-url": "^5.0.2"
   }
 }
