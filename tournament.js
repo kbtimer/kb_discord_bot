@@ -39,8 +39,8 @@ var helpSections = {
 	//	value: 'This command can only be run by users with the Control Room role. This command is fairly complicated, so ask Karan how to use it.'
 	//    },
   'a': {
-		name: 'Add Team to Room',
-		value: 'This command can be run by Control Room or Staff roles.\nExample bot-style usage: `.a @A2 #room-1-text`\nExample NL-style usage: `.add @A2 to #room-1-text`'
+		name: 'Add Team(s) to Room',
+		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to add.\nExample bot-style usage: `.a @A2 @A3 #room-1-text`\nExample NL-style usage: `.add @A2 @A3 to #room-1-text`'
   },
   'r': {
 		name: 'Remove Team from Room',
@@ -134,9 +134,7 @@ var add = async function (role, to) {
   var children = to.children.array();
   await lockPerms(children[0]);
   await lockPerms(children[1]);
-  await lockPerms(children[0]);
-  await lockPerms(children[1]);
-  return;
+  return role.toString();
 }
 
 var remove = async function (role, from) {
@@ -152,8 +150,6 @@ var remove = async function (role, from) {
 		//'EMBED_LINKS': false
   });
   var	children = from.children.array();
-  await lockPerms(children[0]);
-  await lockPerms(children[1]);
   await lockPerms(children[0]);
   await lockPerms(children[1]);
   return;
@@ -726,7 +722,6 @@ var processCommand = async function (command, message) {
 		if (command.indexOf('.a') === 0) {
 			try {
 				var roles = mentions.roles;
-				var role = roles[0];
 				var channels = mentions.channels;
 				var to = channels[0].parent;
 				if(to.name == "Control Room" || to.name == "Hub") {
@@ -738,19 +733,39 @@ var processCommand = async function (command, message) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
 					throw 'Coach role deleted';
 				}
-				if(role.position >= pos) {
-					message.channel.send('Cannot add with non-team role ' + role.toString());
-					throw 'Cannot add with non-team role ' + role.toString();
+				for(var i=0; i<roles.length; i++) {
+					if(roles[i].position >= pos) {
+						message.channel.send('Cannot add with non-team role ' + roles[i].toString());
+						throw 'Cannot add with non-team role ' + roles[i].toString();
+					}
 				}
-				confirm(message, 'Are you sure you want to add team ' + role.toString() + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+				var roleNames = "";
+				if(roles.length < 1) {
+					message.channel.send('No role specified for adding.');
+					throw 'No role specified for adding';
+				} else if(roles.length == 1) {
+					roleNames = roles[0].toString();
+				} else {
+					for(var i=0; i<roles.length-1; i++) {
+						roleNames += roles[i].toString();
+						if(roles.length > 2) {
+							roleNames += ", "
+						}
+					}
+					roleNames += " and " + roles[roles.length-1].toString();
+				}
+				confirm(message, 'Are you sure you want to add team(s) ' + roleNames + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The addition is cancelled.');
 				}, function () {
-					add(role, to).then(function () {
-						message.channel.send('Team ' + role.toString() + ' has been added to room "' + to.name + '."');
-					}).catch(function (error) {
-						console.error(error);
-						help(message.channel, ['a']);
-					});
+					for(var i=0; i<roles.length; i++) {
+						var currRole = roles[i];
+						add(currRole, to).then(function (teamName) {
+							message.channel.send('Team ' + teamName + ' has been added to room "' + to.name + '."');
+						}).catch(function (error) {
+							console.error(error);
+							help(message.channel, ['a']);
+						});
+					}
 				});
 			} catch (e) {
 				console.error(e);
