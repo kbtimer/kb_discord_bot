@@ -902,11 +902,16 @@ var processCommand = async function (command, message) {
 				for (var i = 1; i < names.length; i+= 2) {
 					var name = names[i];
 					var Exp = /[a-z0-9]/i;
+					var Exp2 = /^[a-zA-Z0-9._ -]+$/;
 					if(!Exp.test(name)) {
 						message.channel.send("Something is wrong with your list of room names.\nEither one of your rooms has no alphanumeric characters, or you missed a quotation mark.\nThese are the names I found, and I see a problem with name " + (Math.floor(i/2)+1) + ":");
 						for (var j = 1; j < names.length; j += 2) {
 							message.channel.send("" + (Math.floor(j/2)+1) + ": \"" + names[j] + "\"");
 						}
+						return;
+					}
+					if(!Exp2.test(name)) {
+						message.channel.send("Room names can only have letters, numbers, spaces, hyphens, periods, and underscores, but no other special characters.\nThe room name \"" + name + "\" doesn't meet these requirements.");
 						return;
 					}
 				}
@@ -1063,11 +1068,17 @@ var processCommand = async function (command, message) {
 				for (var i = 1; i < names.length; i+= 2) {
 					var name = names[i];
 					var Exp = /[a-z0-9]/i;
+					var Exp2 = /^[a-zA-Z0-9._-]+$/;
 					if(!Exp.test(name)) {
 						message.channel.send("Something is wrong with your list of team names.\nEither one of your teams has no alphanumeric characters, or you missed a quotation mark.\nThese are the names I found, and I see a problem with name " + (Math.floor(i/2)+1) + ":");
 						for (var j = 1; j < names.length; j += 2) {
 							message.channel.send("" + (Math.floor(j/2)+1) + ": \"" + names[j] + "\"");
 						}
+						return;
+					}
+					if(!Exp2.test(name)) {
+						message.channel.send("Team names can only have letters, numbers, periods, underscores, and hyphens, but no spaces or other special characters.");
+						message.channel.send("The team name \"" + name + "\" doesn't meet these requirements.")
 						return;
 					}
 				}
