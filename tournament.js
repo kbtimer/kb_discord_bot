@@ -899,6 +899,17 @@ var processCommand = async function (command, message) {
 					help(message.channel, ['c']);
 					return;
 				}
+				for (var i = 1; i < names.length; i+= 2) {
+					var name = names[i];
+					var Exp = /[a-z0-9]/i;
+					if(!Exp.test(name)) {
+						message.channel.send("Something is wrong with your list of room names.\nEither one of your rooms has no alphanumeric characters, or you missed a quotation mark.\nThese are the names I found, and I see a problem with name " + (Math.floor(i/2)+1) + ":");
+						for (var j = 1; j < names.length; j += 2) {
+							message.channel.send("" + (Math.floor(j/2)+1) + ": \"" + names[j] + "\"");
+						}
+						return;
+					}
+				}
 				confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The creation is cancelled.');
 				}, function () {
@@ -1049,11 +1060,27 @@ var processCommand = async function (command, message) {
 					help(message.channel, ['g', 'n', 'm']);
 					return;
 				}
+				for (var i = 1; i < names.length; i+= 2) {
+					var name = names[i];
+					var Exp = /[a-z0-9]/i;
+					if(!Exp.test(name)) {
+						message.channel.send("Something is wrong with your list of team names.\nEither one of your teams has no alphanumeric characters, or you missed a quotation mark.\nThese are the names I found, and I see a problem with name " + (Math.floor(i/2)+1) + ":");
+						for (var j = 1; j < names.length; j += 2) {
+							message.channel.send("" + (Math.floor(j/2)+1) + ": \"" + names[j] + "\"");
+						}
+						return;
+					}
+				}
+
 				confirm(message, 'Are you sure you want to create the team[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The new team creation is cancelled.');
 				}, function () {
 					for (var i = 1; i < names.length; i += 2) {
 						var name = names[i];
+						//if(!name.match(Exp)) {
+							//console.log("Something isn't right");//messsage.channel.send("Something isn't right");
+							//throw "Bad name.  Check your .n command";
+						//}
 						//console.log("Creating team " + name );
 						createTeam(message.channel.guild, name).then(function (teamName) {
 							message.channel.send('Team "' + teamName + '" has been created.');
