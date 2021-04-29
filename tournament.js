@@ -891,6 +891,38 @@ var processCommand = async function (command, message) {
 					});
 				});
 			}
+		} else if (command.indexOf('.l') === 0 && message.member === message.channel.guild.owner) {
+			console.log("Writing member update log.");
+			const fetchedLogs = await message.guild.fetchAuditLogs({
+				type: 'MEMBER_UPDATE',
+				limit: 1,
+			});
+			var outData = ""
+			var prevEntry = fetchedLogs.entries.first();
+			let {executor, target, changes} = prevEntry;
+			outData += executor.tag + " changed " + target.tag + " " + changes['0'].key +
+				" from " + changes['0'].old + " to " + changes['0'].new + "\n";
+			while(1) {
+				const fetchedLogs = await message.guild.fetchAuditLogs({
+					type: 'MEMBER_UPDATE',
+					limit: 100,
+					before: prevEntry,
+				});
+				if(!fetchedLogs.entries.size) {
+					break;
+				}
+				fetchedLogs.entries.forEach(tempLog => {
+					let {executor, target, changes} = tempLog;
+					outData += executor.tag + " changed " + target.tag + " " + changes['0'].key +
+						" from " + changes['0'].old + " to " + changes['0'].new + "\n";
+				});
+				prevEntry = fetchedLogs.entries.last();
+				console.log(prevEntry.executor.tag);
+			}
+			fs.writeFile("MemberUpdateLog.txt", outData, function (err) {
+				if(err) return console.log(err);
+				console.log("Wrote member update log.");
+			});
 		} else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
 			try {
 				var content = command.substr(command.indexOf(' ') + 1).trim();
