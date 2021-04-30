@@ -615,6 +615,7 @@ var createTeam = async function (guild, name) {
 	//console.log("Created loung " + name + " Lounge");
 	//console.log("Adding role " + name + " to lounge " + loungeText.name);
 	await add(teamRole, loungeText.parent);
+	await add(teamRole, loungeText.parent);
 	//console.log("Added role " + name + " to lounge " + loungeText.name);
 	//Overwrite default READ_MESSAGE_HISTORY from add function
 	//console.log("updating read_message_history for " + name);
