@@ -132,8 +132,8 @@ var add = async function (role, to) {
 		//'EMBED_LINKS': true
   });
   var children = to.children.array();
-  await lockPerms(children[0]);
-  await lockPerms(children[1]);
+  //await lockPerms(children[0]);
+  //await lockPerms(children[1]);
   return role.toString();
 }
 
@@ -150,8 +150,8 @@ var remove = async function (role, from) {
 		//'EMBED_LINKS': false
   });
   var	children = from.children.array();
-  await lockPerms(children[0]);
-  await lockPerms(children[1]);
+  //await lockPerms(children[0]);
+  //await lockPerms(children[1]);
   return;
 }
 
@@ -177,10 +177,10 @@ var empty = async function (room) {
 		}
   }
   var children = room.children.array();
-  await lockPerms(children[0]);
-  await lockPerms(children[1]);
-  await lockPerms(children[0]);
-  await lockPerms(children[1]);
+  //await lockPerms(children[0]);
+  //await lockPerms(children[1]);
+  //await lockPerms(children[0]);
+  //await lockPerms(children[1]);
   return;
 }
 
