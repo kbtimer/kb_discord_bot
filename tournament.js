@@ -348,11 +348,13 @@ var init = async function (guild) {
 		'SEND_MESSAGES': true,
 		'VIEW_CHANNEL': true
   });
+	generalChannel.setRateLimitPerUser(10);
 
 
   var hallwayVoiceChannel = await guild.channels.create('hallway-voice', {parent: hubCategory, type: 'voice'});
 	//make some lounge channels for people to talk to each other
 	var loungeChannel = await guild.channels.create('lounge-text', {parent: hubCategory});
+	loungeChannel.setRateLimitPerUser(10);
 	var loungeVoiceChannel1 = await guild.channels.create('lounge-voice-1', {parent: hubCategory, type: 'voice'});
 	var loungeVoiceChannel2 = await guild.channels.create('lounge-voice-2', {parent: hubCategory, type: 'voice'});
 	var loungeVoiceChannel3 = await guild.channels.create('lounge-voice-3', {parent: hubCategory, type: 'voice'});
