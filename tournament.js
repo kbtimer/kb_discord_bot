@@ -337,7 +337,8 @@ var init = async function (guild) {
   await announcementsChannel.updateOverwrite(guild.roles.everyone, {
 		'VIEW_CHANNEL': true,
 		'SEND_MESSAGES': false,
-		'READ_MESSAGE_HISTORY': true
+		'READ_MESSAGE_HISTORY': true,
+		'ADD_REACTIONS': false
   });
   announcementsChannel.send(guild.name + ' is committed to ensuring that Knowledge Bowl is safe, open, and welcoming for everyone. If anyone at this tournament makes you feel unsafe or unwelcome, please do not hesitate to reach out to anyone with the ' + controlRoomRole.toString() + ' or ' + staffRole.toString() + ' roles.');
 
@@ -346,7 +347,8 @@ var init = async function (guild) {
 	var generalChannel = await guild.channels.create('general', {parent: hubCategory});
 	await generalChannel.updateOverwrite(guild.roles.everyone, {
 		'SEND_MESSAGES': true,
-		'VIEW_CHANNEL': true
+		'VIEW_CHANNEL': true,
+		'ADD_REACTIONS': false
   });
 	generalChannel.setRateLimitPerUser(10);
 
