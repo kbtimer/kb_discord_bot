@@ -70,6 +70,14 @@ var helpSections = {
 		name: 'Written Secret Code',
 		value: 'This command can be run by anyone in a text channel with lounge in the name.  It outputs a secret code for the written.\nExample bot-style usage: `.w`\nExample NL-style usage: `.written-code`'
 	},
+	'l': {
+		name: 'Lockdown Lounge',
+		value: 'This command can only be run by users with the Control Room Role.  It removes permissions to post in hub (should be overridden by #general), thus locking the lounge.\nExample bot-style usage: `.l`\nExample NL-style usage: `.lockdown-lounge`'
+	},
+	'o': {
+		name: 'Open Lounge',
+		value: 'This command can only be run by users with the Control Room Role.  It adds permissions to post in hub, thus unlocking the lounge.\nExample bot-style usage: `.o`\nExample NL-style usage: `.open-lounge`'
+	},
   'h': {
 		name: 'Display This Help',
 		value: 'Example bot-style usage: `.h`\nExample NL-style usage: `.help`'
@@ -438,7 +446,7 @@ var init = async function (guild) {
 }
 
 var help = function (channel, sections) {
-  sections = sections || ['i', 'g', 'u', 'c', 'd', 'b', 'n', 'm', 'a', 'r', 't', 'e', 'p', 'w', 'h'];
+  sections = sections || ['i', 'g', 'u', 'c', 'd', 'b', 'n', 'm', 'a', 'r', 't', 'e', 'p', 'w', 'l', 'o', 'h'];
   var helpMessage = {
 		color: '#29bb9c', // same as discord aqua
 		title: 'CKB Bot Help',
@@ -651,6 +659,102 @@ var addToHub = async function(guild, role) {
 
 	//Announcements isn't synced with the hub category, so we need to add visibility
 	//announcementsChannel.updateOverwrite(role);
+}
+
+var lockdownLounge = async function(guild) {
+	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
+
+	//First modify hub, which changes all sync'd channels
+	{
+		var overwrites = generalChannel.parent.permissionOverwrites.array();
+		for (var overwrite of overwrites) {
+			var role = await generalChannel.parent.guild.roles.fetch(overwrite.id);
+			try {
+				var pos = await coachPosition(guild);
+				if(pos < 0) {
+					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
+					throw 'Coach role deleted';
+				}
+				if(role.position < pos && role.name !== '@everyone') {
+					await generalChannel.parent.updateOverwrite(role, {
+						'VIEW_CHANNEL': true,
+						'SEND_MESSAGES': false,
+						'CONNECT': true,
+						'ADD_REACTIONS': false,
+						'READ_MESSAGE_HISTORY': true,
+						'SPEAK': false
+					});
+				}
+			} catch (e) {
+				// user overwrite, i guess
+				await overwrite.delete();
+			}
+		}
+	}
+
+	{
+		//Now modify hallway-voice to unsync and allow speaking
+		var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
+		var overwrites = hallwayChannel.permissionOverwrites.array();
+		for (var overwrite of overwrites) {
+			var role = await hallwayChannel.guild.roles.fetch(overwrite.id);
+			try {
+				var pos = await coachPosition(guild);
+				if(pos < 0) {
+					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
+					throw 'Coach role deleted';
+				}
+				if(role.position < pos && role.name !== '@everyone') {
+					await hallwayChannel.updateOverwrite(role, {
+						'VIEW_CHANNEL': true,
+						'SEND_MESSAGES': false,
+						'CONNECT': true,
+						'ADD_REACTIONS': false,
+						'READ_MESSAGE_HISTORY': true,
+						'SPEAK': true
+					});
+				}
+			} catch (e) {
+				// user overwrite, i guess
+				await overwrite.delete();
+			}
+		}
+	}
+}
+
+var unlockLounge = async function(guild) {
+	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
+
+	//First unmodify hub
+	{
+		var overwrites = generalChannel.parent.permissionOverwrites.array();
+		for (var overwrite of overwrites) {
+			var role = await generalChannel.parent.guild.roles.fetch(overwrite.id);
+			try {
+				var pos = await coachPosition(guild);
+				if(pos < 0) {
+					throw 'Coach role deleted';
+				}
+				if(role.position < pos && role.name !== '@everyone') {
+					await generalChannel.parent.updateOverwrite(role, {
+						'VIEW_CHANNEL': true,
+						'SEND_MESSAGES': true,
+						'CONNECT': true,
+						'ADD_REACTIONS': true,
+						'READ_MESSAGE_HISTORY': true,
+						'SPEAK': true
+					});
+				}
+			} catch (e) {
+				// user overwrite, i guess
+				await overwrite.delete();
+			}
+		}
+	}
+
+	//sync hallway-voice with hub
+	var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
+	await lockPerms(hallwayChannel);
 }
 
 var createTeam = async function (guild, name) {
@@ -948,7 +1052,7 @@ var processCommand = async function (command, message) {
 					});
 				});
 			}
-		} else if (command.indexOf('.l') === 0 && message.member === message.channel.guild.owner) {
+		} else if (command.indexOf('.z') === 0 && message.member === message.channel.guild.owner) {
 			console.log("Writing member update log.");
 			const fetchedLogs = await message.guild.fetchAuditLogs({
 				type: 'MEMBER_UPDATE',
@@ -1356,6 +1460,22 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['g','u']);
 			}
+		} else if (command.indexOf('.l') === 0 && hasRole(message.member, 'Control Room')) {
+			lockdownLounge(message.channel.guild).then(function() {
+				message.channel.send('Lounge is locked down.');
+			}).catch(function (error) {
+				console.error(error);
+				message.channel.send("Lockdown failed.");
+				help(message.channel, ['l', 'o']);
+			});
+		} else if (command.indexOf('.o') === 0 && hasRole(message.member, 'Control Room')) {
+			unlockLounge(message.channel.guild).then(function() {
+				message.channel.send('Lounge is unlocked.');
+			}).catch(function (error) {
+				console.error(error);
+				message.channel.send("Unlock failed.");
+				help(message.channel, ['l', 'o']);
+			});
 		} else if (command.indexOf('.h') === 0) {
 			help(message.channel);
 		} else if (command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff'))) {
