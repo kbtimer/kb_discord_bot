@@ -663,6 +663,7 @@ var addToHub = async function(guild, role) {
 
 var lockdownLounge = async function(guild) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
+	var pos = await coachPosition(guild);
 
 	//First modify hub, which changes all sync'd channels
 	{
@@ -670,7 +671,6 @@ var lockdownLounge = async function(guild) {
 		for (var overwrite of overwrites) {
 			var role = await generalChannel.parent.guild.roles.fetch(overwrite.id);
 			try {
-				var pos = await coachPosition(guild);
 				if(pos < 0) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
 					throw 'Coach role deleted';
@@ -699,7 +699,6 @@ var lockdownLounge = async function(guild) {
 		for (var overwrite of overwrites) {
 			var role = await hallwayChannel.guild.roles.fetch(overwrite.id);
 			try {
-				var pos = await coachPosition(guild);
 				if(pos < 0) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
 					throw 'Coach role deleted';
@@ -724,6 +723,7 @@ var lockdownLounge = async function(guild) {
 
 var unlockLounge = async function(guild) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
+	var pos = await coachPosition(guild);
 
 	//First unmodify hub
 	{
@@ -731,7 +731,6 @@ var unlockLounge = async function(guild) {
 		for (var overwrite of overwrites) {
 			var role = await generalChannel.parent.guild.roles.fetch(overwrite.id);
 			try {
-				var pos = await coachPosition(guild);
 				if(pos < 0) {
 					throw 'Coach role deleted';
 				}
