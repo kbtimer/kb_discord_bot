@@ -663,20 +663,21 @@ var addToHub = async function(guild, role) {
 
 var lockdownLounge = async function(guild) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
+	var hubCategory = generalChannel.parent;
 	var pos = await coachPosition(guild);
 
 	//First modify hub, which changes all sync'd channels
 	{
-		var overwrites = generalChannel.parent.permissionOverwrites.array();
+		var overwrites = hubCategory.permissionOverwrites.array();
 		for (var overwrite of overwrites) {
-			var role = await generalChannel.parent.guild.roles.fetch(overwrite.id);
+			var role = await guild.roles.fetch(overwrite.id);
 			try {
 				if(pos < 0) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
 					throw 'Coach role deleted';
 				}
 				if(role.position < pos && role.name !== '@everyone') {
-					await generalChannel.parent.updateOverwrite(role, {
+					await hubCategory.updateOverwrite(role, {
 						'VIEW_CHANNEL': true,
 						'SEND_MESSAGES': false,
 						'CONNECT': true,
@@ -686,8 +687,6 @@ var lockdownLounge = async function(guild) {
 					});
 				}
 			} catch (e) {
-				// user overwrite, i guess
-				await overwrite.delete();
 			}
 		}
 	}
@@ -697,7 +696,7 @@ var lockdownLounge = async function(guild) {
 		var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
 		var overwrites = hallwayChannel.permissionOverwrites.array();
 		for (var overwrite of overwrites) {
-			var role = await hallwayChannel.guild.roles.fetch(overwrite.id);
+			var role = await guild.roles.fetch(overwrite.id);
 			try {
 				if(pos < 0) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
@@ -714,8 +713,6 @@ var lockdownLounge = async function(guild) {
 					});
 				}
 			} catch (e) {
-				// user overwrite, i guess
-				await overwrite.delete();
 			}
 		}
 	}
@@ -723,19 +720,20 @@ var lockdownLounge = async function(guild) {
 
 var unlockLounge = async function(guild) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
+	var hubCategory = generalChannel.parent;
 	var pos = await coachPosition(guild);
 
 	//First unmodify hub
 	{
-		var overwrites = generalChannel.parent.permissionOverwrites.array();
+		var overwrites = hubCategory.permissionOverwrites.array();
 		for (var overwrite of overwrites) {
-			var role = await generalChannel.parent.guild.roles.fetch(overwrite.id);
+			var role = await guild.roles.fetch(overwrite.id);
 			try {
 				if(pos < 0) {
 					throw 'Coach role deleted';
 				}
 				if(role.position < pos && role.name !== '@everyone') {
-					await generalChannel.parent.updateOverwrite(role, {
+					await hubCategory.updateOverwrite(role, {
 						'VIEW_CHANNEL': true,
 						'SEND_MESSAGES': true,
 						'CONNECT': true,
@@ -745,8 +743,6 @@ var unlockLounge = async function(guild) {
 					});
 				}
 			} catch (e) {
-				// user overwrite, i guess
-				await overwrite.delete();
 			}
 		}
 	}
@@ -1460,6 +1456,7 @@ var processCommand = async function (command, message) {
 				help(message.channel, ['g','u']);
 			}
 		} else if (command.indexOf('.l') === 0 && hasRole(message.member, 'Control Room')) {
+			message.channel.send("Locking down the lounge.  This could take a while . . . ");
 			lockdownLounge(message.channel.guild).then(function() {
 				message.channel.send('Lounge is locked down.');
 			}).catch(function (error) {
@@ -1468,6 +1465,7 @@ var processCommand = async function (command, message) {
 				help(message.channel, ['l', 'o']);
 			});
 		} else if (command.indexOf('.o') === 0 && hasRole(message.member, 'Control Room')) {
+			message.channel.send("Unlocking the lounge.  This could take a while . . . ");
 			unlockLounge(message.channel.guild).then(function() {
 				message.channel.send('Lounge is unlocked.');
 			}).catch(function (error) {
