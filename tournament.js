@@ -661,7 +661,43 @@ var addToHub = async function(guild, role) {
 	//announcementsChannel.updateOverwrite(role);
 }
 
-var lockdownLounge = async function(guild) {
+var lockdownOverwrite = async function(guild, hubCategory, coachPos, overwrite) {
+	var role = await guild.roles.fetch(overwrite.id);
+	if(coachPos < 0) {
+		throw 'Coach role deleted';
+	}
+	if(role.position < coachPos && role.name !== '@everyone') {
+		await hubCategory.updateOverwrite(role, {
+			'VIEW_CHANNEL': true,
+			'SEND_MESSAGES': false,
+			'CONNECT': true,
+			'ADD_REACTIONS': false,
+			'READ_MESSAGE_HISTORY': true,
+			'SPEAK': false
+		});
+	}
+	return Promise.resolve("Success");
+}
+
+var allowSpeakOverwrite = async function(guild, hallwayChannel, coachPos, overwrite) {
+	var role = await guild.roles.fetch(overwrite.id);
+	if(coachPos < 0) {
+		throw 'Coach role deleted';
+	}
+	if(role.position < coachPos && role.name !== '@everyone') {
+		await hallwayChannel.updateOverwrite(role, {
+			'VIEW_CHANNEL': true,
+			'SEND_MESSAGES': false,
+			'CONNECT': true,
+			'ADD_REACTIONS': false,
+			'READ_MESSAGE_HISTORY': true,
+			'SPEAK': true
+		});
+	}
+	return Promise.resolve("Success");
+}
+
+var lockdownLounge = async function(guild, message) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
 	var hubCategory = generalChannel.parent;
 	var pos = await coachPosition(guild);
@@ -669,53 +705,41 @@ var lockdownLounge = async function(guild) {
 	//First modify hub, which changes all sync'd channels
 	{
 		var overwrites = hubCategory.permissionOverwrites.array();
+		var promises = Array();
 		for (var overwrite of overwrites) {
-			var role = await guild.roles.fetch(overwrite.id);
-			try {
-				if(pos < 0) {
-					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
-					throw 'Coach role deleted';
-				}
-				if(role.position < pos && role.name !== '@everyone') {
-					await hubCategory.updateOverwrite(role, {
-						'VIEW_CHANNEL': true,
-						'SEND_MESSAGES': false,
-						'CONNECT': true,
-						'ADD_REACTIONS': false,
-						'READ_MESSAGE_HISTORY': true,
-						'SPEAK': false
-					});
-				}
-			} catch (e) {
-			}
+			promises.push(lockdownOverwrite(guild, hubCategory, pos, overwrite));
 		}
+		await Promise.all(promises);
 	}
 
 	{
 		//Now modify hallway-voice to unsync and allow speaking
 		var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
 		var overwrites = hallwayChannel.permissionOverwrites.array();
+		var promises = Array();
 		for (var overwrite of overwrites) {
-			var role = await guild.roles.fetch(overwrite.id);
-			try {
-				if(pos < 0) {
-					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
-					throw 'Coach role deleted';
-				}
-				if(role.position < pos && role.name !== '@everyone') {
-					await hallwayChannel.updateOverwrite(role, {
-						'VIEW_CHANNEL': true,
-						'SEND_MESSAGES': false,
-						'CONNECT': true,
-						'ADD_REACTIONS': false,
-						'READ_MESSAGE_HISTORY': true,
-						'SPEAK': true
-					});
-				}
-			} catch (e) {
-			}
+			promises.push(allowSpeakOverwrite(guild, hallwayChannel, pos, overwrite));
 		}
+		await Promise.all(promises);
 	}
+}
+
+var allowHubSpeakOverwrite = async function(guild, hubCategory, coachPos, overwrite) {
+	var role = await guild.roles.fetch(overwrite.id);
+	if(coachPos < 0) {
+		throw 'Coach role deleted';
+	}
+	if(role.position < coachPos && role.name !== '@everyone') {
+		await hubCategory.updateOverwrite(role, {
+			'VIEW_CHANNEL': true,
+			'SEND_MESSAGES': true,
+			'CONNECT': true,
+			'ADD_REACTIONS': true,
+			'READ_MESSAGE_HISTORY': true,
+			'SPEAK': true
+		});
+	}
+	return Promise.resolve("Success");
 }
 
 var unlockLounge = async function(guild) {
@@ -726,25 +750,11 @@ var unlockLounge = async function(guild) {
 	//First unmodify hub
 	{
 		var overwrites = hubCategory.permissionOverwrites.array();
+		var promises = Array();
 		for (var overwrite of overwrites) {
-			var role = await guild.roles.fetch(overwrite.id);
-			try {
-				if(pos < 0) {
-					throw 'Coach role deleted';
-				}
-				if(role.position < pos && role.name !== '@everyone') {
-					await hubCategory.updateOverwrite(role, {
-						'VIEW_CHANNEL': true,
-						'SEND_MESSAGES': true,
-						'CONNECT': true,
-						'ADD_REACTIONS': true,
-						'READ_MESSAGE_HISTORY': true,
-						'SPEAK': true
-					});
-				}
-			} catch (e) {
-			}
+			promises.push(allowHubSpeakOverwrite(guild, hubCategory, pos, overwrite));
 		}
+		await Promise.all(promises);
 	}
 
 	//sync hallway-voice with hub
@@ -1457,7 +1467,7 @@ var processCommand = async function (command, message) {
 			}
 		} else if (command.indexOf('.l') === 0 && hasRole(message.member, 'Control Room')) {
 			message.channel.send("Locking down the lounge.  This could take a while . . . ");
-			lockdownLounge(message.channel.guild).then(function() {
+			lockdownLounge(message.channel.guild, message).then(function() {
 				message.channel.send('Lounge is locked down.');
 			}).catch(function (error) {
 				console.error(error);
