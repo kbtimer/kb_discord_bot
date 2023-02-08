@@ -1,8 +1,10 @@
-const Discord = require('discord.js');
+const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, Colors, ChannelType, AuditLogEvent } = require('discord.js');
 const fs = require('fs');
-const parseUrl = require('parse-url');
-const client = new Discord.Client();
-//const config = JSON.parse(String(fs.readFileSync(__dirname + '/config.json')));
+const client = new Client({ intents: [GatewayIntentBits.Guilds,
+																			GatewayIntentBits.GuildMessages,
+																			GatewayIntentBits.MessageContent,
+																			GatewayIntentBits.GuildMessageReactions,
+																			GatewayIntentBits.GuildMembers] });
 const config = require("./config.json");
 
 var helpSections = {
@@ -38,10 +40,10 @@ var helpSections = {
 		name: 'New Team[s]',
 		value: 'This command can only by run by users with the Control Room role.  Specify a list of teams names to create in double quotation marks, separated by spaces.\nExample bot-style usage: `.n "AHS-A" "AHS-B" "BHS-A" "BHS-B"`\nExample NL-style usage: `.new-teams "AHS-A" "AHS-B" "BHS-A" "BHS-B"`'
 	},
-  'm': {
-		name: 'Mass Create Teams',
-		value: 'This command can only be run by users with the Control Room role. Specify a prefix and a range of numbers using this notation: `Prefix[Start...End]`. The bot will automatically create roles for each number in the specified range, randomly assign colors, and create lounges.\nExample bot-style usage: `.m Team[1...3]`\nExample NL-style usage: `.mass-create-teams Team[1...3]`'
-  },
+  //'m': {
+	//	name: 'Mass Create Teams',
+	//	value: 'This command can only be run by users with the Control Room role. Specify a prefix and a range of numbers using this notation: `Prefix[Start...End]`. The bot will automatically create roles for each number in the specified range, randomly assign colors, and create lounges.\nExample bot-style usage: `.m Team[1...3]`\nExample NL-style usage: `.mass-create-teams Team[1...3]`'
+  //},
 	//    's': {
 	//	name: 'Create Room Schedules from Google Sheets',
 	//	value: 'This command can only be run by users with the Control Room role. This command is fairly complicated, so ask Karan how to use it.'
@@ -85,12 +87,13 @@ var helpSections = {
 }
 
 var hasRole = function (member, roleName) {
-  var roles = member.roles.cache.array();
-  for (var role of roles) {
-		if (role.name === roleName) {
-	    return true;
-		}
-  }
+	//console.log("Checking if " + member.guild.name + " has role " + roleName);
+	const roleNames = member.roles.cache.map(r => r.name);
+	if(roleNames.includes(roleName)) {
+		//console.log("Found role " + roleName);
+		return true;
+	}
+	//console.log("Didn't find role " + roleName);
   return false;
 }
 
@@ -162,49 +165,44 @@ var getMentions = function (content, guild) {
 }
 
 var coachPosition = async function(guild) {
-	var coachRole = 0;
-  for (var currRole of guild.roles.cache.array()) {
-		if (currRole.name === 'Coach' && coachRole === 0) {
-	    coachRole = currRole;
-		}
-  }
-	if(coachRole === 0) {
+	var coachRole = guild.roles.cache.find(r => r.name === 'Coach');
+	if(coachRole === undefined) {
 		return -1;
 	}
 	return coachRole.position;
 }
 
 var add = async function (role, to) {
-  await to.updateOverwrite(role, {
-		'VIEW_CHANNEL': true,
-		'SEND_MESSAGES': true,
-		'CONNECT': true,
-		'ADD_REACTIONS': true,
-		'READ_MESSAGE_HISTORY': false,
-		'SPEAK': true
+  await to.permissionOverwrites.edit(role, {
+		ViewChannel: true,
+		SendMessages: true,
+		Connect: true,
+		AddReactions: true,
+		ReadMessageHistory: false,
+		Speak: true
 		//'USE_EXTERNAL_EMOJIS': true,
 		//'ATTACH_FILES': true,
 		//'EMBED_LINKS': true
   });
-  var children = to.children.array();
+  //var children = to.children.array();
   //await lockPerms(children[0]);
   //await lockPerms(children[1]);
   return role.toString();
 }
 
 var remove = async function (role, from) {
-  await from.updateOverwrite(role, {
-		'VIEW_CHANNEL': false,
-		'SEND_MESSAGES': false,
-		'CONNECT': false,
-		'ADD_REACTIONS': false,
-		'READ_MESSAGE_HISTORY': false,
-		'SPEAK': false
+  await from.permissionOverwrites.delete(role);//edit(role, {
+		//ViewChannel: false,
+		//SendMessages: false,
+		//Connect: false,
+		//AddReactions: false,
+		//ReadMessageHistory: false,
+		//Speak: false
 		//'USE_EXTERNAL_EMOJIS': false,
 		//'ATTACH_FILES': false,
 		//'EMBED_LINKS': false
-  });
-  var	children = from.children.array();
+  //});
+  //var	children = from.children.array();
   //await lockPerms(children[0]);
   //await lockPerms(children[1]);
   return;
@@ -221,8 +219,8 @@ var recolorTo = async function (role, color) {
 }
 
 var empty = async function (room) {
-  var overwrites = room.permissionOverwrites.array();
-  for (var overwrite of overwrites) {
+  var overwrites = room.permissionOverwrites.cache;
+  for (var [flake, overwrite] of overwrites) {
 		var role = await room.guild.roles.fetch(overwrite.id);
 		try {
 	    //	    console.log(role.name);
@@ -232,11 +230,11 @@ var empty = async function (room) {
 	    }
 		} catch (e) {
 	    // user overwrite, i guess
-	    console.log(role);
+	    //console.log(role);
 	    await overwrite.delete();
 		}
   }
-  var children = room.children.array();
+  //var children = room.children.array();
   //await lockPerms(children[0]);
   //await lockPerms(children[1]);
   //await lockPerms(children[0]);
@@ -245,36 +243,31 @@ var empty = async function (room) {
 }
 
 var createRoom = async function (guild, name, staffSpectatorInvisible) {
-  var category = await guild.channels.create(name, {type: 'category'});
-  await category.updateOverwrite(guild.roles.everyone, {
-		'VIEW_CHANNEL': false
+  var category = await guild.channels.create({name: name, type: ChannelType.GuildCategory});
+  await category.permissionOverwrites.edit(guild.roles.everyone, {
+		ViewChannel: false
   });
-  var staffRole = 0, spectatorRole = 0;
-  for (var role of guild.roles.cache.array()) {
-		if (role.name === 'Staff' && staffRole === 0) {
-	    staffRole = role;
-		} else if (role.name === 'Spectator' && spectatorRole === 0) {
-	    spectatorRole = role;
-		}
-  }
+  var staffRole = guild.roles.cache.find(r => r.name === 'Staff')
+	var spectatorRole = guild.roles.cache.find(r => r.name === 'Spectator')
+
   if (!staffSpectatorInvisible) {
-		await category.updateOverwrite(staffRole, {
-	    'VIEW_CHANNEL': true
+		await category.permissionOverwrites.edit(staffRole, {
+	    ViewChannel: true
 		});
-		await category.updateOverwrite(spectatorRole, {
-	    'VIEW_CHANNEL': true
+		await category.permissionOverwrites.edit(spectatorRole, {
+	    ViewChannel: true
 		});
   }
   var cleanName = name.replace(/\s+/g, '-').toLowerCase();
-  var text = await guild.channels.create(cleanName + '-text', {parent: category});
-  var voice = await guild.channels.create(cleanName + '-voice', {parent: category, type: 'voice'});
+  var text = await guild.channels.create({name: cleanName + '-text', parent: category});
+  var voice = await guild.channels.create({name: cleanName + '-voice', parent: category, type: ChannelType.GuildVoice});
   return text;
 }
 
 var deleteRoom = async function (text) {
   var category = text.parent;
   var name = category.name;
-  for (var channel of category.children.array()) {
+  for (var [flake, channel] of category.children.cache) {
 		await channel.delete();
   }
   await category.delete();
@@ -283,11 +276,12 @@ var deleteRoom = async function (text) {
 
 var init = async function (guild) {
   // basic setup of the tournament server
-  // todo clear all existing stuff in the server
-  await guild.setDefaultMessageNotifications('MENTIONS');
-  var existingRoles = guild.roles.cache.array(); // does this really load all the roles? cache business confuses me D:
-  for (var role of existingRoles) {
-		if (role.name !== '@everyone' && role.name !== 'CKB Bot' && role.name !== 'ckbbot' && role.name !== 'Server Booster') {
+	//console.log("In init");
+  await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
+	//console.log("In init 2");
+  var existingRoles = guild.roles.cache;
+  for (var [flake, role] of existingRoles) {
+		if (role.name !== '@everyone' && role.name !== 'CKB Bot' && role.name !== 'ckbbot' && role.name !== 'Server Booster' && role.name !== 'Test CKB Bot Local') {
 	    try {
 				await role.delete();
 	    } catch (e) {
@@ -296,63 +290,72 @@ var init = async function (guild) {
 	    }
 		}
   } // empty out existing roles so the correct ones can take their place
-  existingChannels = guild.channels.cache.array(); // shrug
-  for (var channel of existingChannels) {
+  existingChannels = guild.channels.cache;
+  for (var [flake, channel] of existingChannels) {
 		await channel.delete();
   }
-	const basePermissions = ['CHANGE_NICKNAME', 'VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY', 'USE_EXTERNAL_EMOJIS', 'ADD_REACTIONS', 'CONNECT', 'SPEAK', 'USE_VAD'];
-	const  staffPermissions = [].concat(basePermissions, ['STREAM', 'MANAGE_MESSAGES', 'EMBED_LINKS', 'ATTACH_FILES', 'MENTION_EVERYONE', 'MUTE_MEMBERS', 'MANAGE_NICKNAMES', 'MOVE_MEMBERS']);
+	const basePermissions = [PermissionFlagsBits.ChangeNickname,
+													 PermissionFlagsBits.ViewChannel,
+													 PermissionFlagsBits.SendMessages,
+													 PermissionFlagsBits.ReadMessageHistory,
+													 PermissionFlagsBits.UseExternalEmojis,
+													 PermissionFlagsBits.AddReactions,
+													 PermissionFlagsBits.Connect,
+													 PermissionFlagsBits.Speak,
+													 PermissionFlagsBits.UseVAD];
+	const  staffPermissions = [].concat(basePermissions,
+																			[PermissionFlagsBits.Stream,
+																			 PermissionFlagsBits.ManageMessages,
+																			 PermissionFlagsBits.EmbedLinks,
+																			 PermissionFlagsBits.AttachFiles,
+																			 PermissionFlagsBits.MentionEveryone,
+																			 PermissionFlagsBits.MuteMembers,
+																			 PermissionFlagsBits.ManageNicknames,
+																			 PermissionFlagsBits.MoveMembers]);
 	const coachPermissions = staffPermissions;
 	guild.roles.everyone.setPermissions(basePermissions);
   var controlRoomRole = await guild.roles.create({
-		data: {
-	    name: 'Control Room',
-	    color: 'PURPLE',
-	    hoist: true,
-	    permissions: 'ADMINISTRATOR',
-	    mentionable: true,
-	    position: 1
-		}
+	  name: 'Control Room',
+	  color: Colors.Purple,
+	  hoist: true,
+	  permissions: PermissionFlagsBits.Administrator,
+	  mentionable: true,
+	  position: 1
   });
   var staffRole = await guild.roles.create({
-		data: {
-	    name: 'Staff',
-	    color: 'BLUE',
-	    hoist: true,
-			permissions: staffPermissions,
-	    mentionable: true,
-	    position: 1
-		}
+	  name: 'Staff',
+	  color: Colors.Blue,
+	  hoist: true,
+		permissions: staffPermissions,
+	  mentionable: true,
+	  position: 1
   });
   var spectatorRole = await guild.roles.create({
-		data: {
-	    name: 'Spectator',
-	    color: 'DARK_GREY',
-	    hoist: true,
-	    mentionable: true,
-	    position: 1
-		}
+	  name: 'Spectator',
+	  color: Colors.DarkGrey,
+	  hoist: true,
+	  mentionable: true,
+	  position: 1
   });
   var coachRole = await guild.roles.create({
-		data: {
-	    name: 'Coach',
-	    color: '#546E7A', // same as bottom right role color
-	    hoist: true,
-			permissions: coachPermissions,
-	    mentionable: true,
-	    position: 1
-		}
+	  name: 'Coach',
+	  color: 0x546E7A, // same as bottom right role color
+	  hoist: true,
+		permissions: coachPermissions,
+	  mentionable: true,
+	  position: 1
   });
-  var controlRoomCategory = await guild.channels.create('Control Room', {type: 'category'});
-  await controlRoomCategory.updateOverwrite(guild.roles.everyone, {
-		'VIEW_CHANNEL': false
+	var controlRoomCategory = await guild.channels.create({name: 'Control Room',
+																												 type: ChannelType.GuildCategory});
+  await controlRoomCategory.permissionOverwrites.edit(guild.roles.everyone, {
+		ViewChannel: false
   });
-  await controlRoomCategory.updateOverwrite(staffRole, {
-		'VIEW_CHANNEL': true
+  await controlRoomCategory.permissionOverwrites.edit(staffRole, {
+		ViewChannel: true
   });
-  var linksChannel = await guild.channels.create('announcements-and-links', {parent: controlRoomCategory});
-  await linksChannel.updateOverwrite(staffRole, {
-		'SEND_MESSAGES': false
+  var linksChannel = await guild.channels.create({name: 'announcements-and-links', parent: controlRoomCategory});
+  await linksChannel.permissionOverwrites.edit(staffRole, {
+		SendMessages: false
   });
   /*
     var packetsChannel = await guild.channels.create('packets', {parent: controlRoomCategory});
@@ -360,95 +363,96 @@ var init = async function (guild) {
     'SEND_MESSAGES': false
     });
   */
-  var protestsChannel = await guild.channels.create('protests', {parent: controlRoomCategory});
-  var botCommandsChannel = await guild.channels.create('bot-commands', {parent: controlRoomCategory});
-  var controlRoomChannel = await guild.channels.create('control-room', {parent: controlRoomCategory});
-  var controlRoomVoiceChannel = await guild.channels.create('control-room-voice', {parent: controlRoomCategory, type: 'voice'});
-	await controlRoomChannel.updateOverwrite(staffRole, {
-		'VIEW_CHANNEL': false
+  var protestsChannel = await guild.channels.create({name: 'protests', parent: controlRoomCategory});
+  var botCommandsChannel = await guild.channels.create({name: 'bot-commands', parent: controlRoomCategory});
+  var controlRoomChannel = await guild.channels.create({name: 'control-room', parent: controlRoomCategory});
+  var controlRoomVoiceChannel = await guild.channels.create({name: 'control-room-voice', parent: controlRoomCategory, type: ChannelType.GuildVoice});
+	await controlRoomChannel.permissionOverwrites.edit(staffRole, {
+		ViewChannel: false
 	});
-	await controlRoomVoiceChannel.updateOverwrite(staffRole, {
-		'VIEW_CHANNEL': false
+	await controlRoomVoiceChannel.permissionOverwrites.edit(staffRole, {
+		ViewChannel: false
 	});
-  var readerRoomChannel = await guild.channels.create('reader-room', {parent: controlRoomCategory});
-  var readerRoomVoiceChannel = await guild.channels.create('reader-room-voice', {parent: controlRoomCategory, type: 'voice'});
-  var readerRoomVoice2Channel = await guild.channels.create('reader-room-voice-2', {parent: controlRoomCategory, type: 'voice'});
+  var readerRoomChannel = await guild.channels.create({name: 'reader-room', parent: controlRoomCategory});
+  var readerRoomVoiceChannel = await guild.channels.create({name: 'reader-room-voice', parent: controlRoomCategory, type: ChannelType.GuildVoice});
+  var readerRoomVoice2Channel = await guild.channels.create({name: 'reader-room-voice-2', parent: controlRoomCategory, type: ChannelType.GuildVoice});
 
 
 	//Hub is where students get announcements and interact with each other
-	var hubCategory = await guild.channels.create('Hub', {type: 'category'});
-  await hubCategory.updateOverwrite(guild.roles.everyone, {
-		'VIEW_CHANNEL': false
+	var hubCategory = await guild.channels.create({name: 'Hub',
+																								 type: ChannelType.GuildCategory});
+  await hubCategory.permissionOverwrites.edit(guild.roles.everyone, {
+		ViewChannel: false
   });
-  await hubCategory.updateOverwrite(staffRole, {
-		'VIEW_CHANNEL': true
+  await hubCategory.permissionOverwrites.edit(staffRole, {
+		ViewChannel: true
   });
-  await hubCategory.updateOverwrite(spectatorRole, {
-		'VIEW_CHANNEL': true
+  await hubCategory.permissionOverwrites.edit(spectatorRole, {
+		ViewChannel: true
   });
-  await hubCategory.updateOverwrite(coachRole, {
-		'VIEW_CHANNEL': true
+  await hubCategory.permissionOverwrites.edit(coachRole, {
+		ViewChannel: true
   });
 
 	//announcements channel won't be synced with hub category
 	//  so that @everyone can read it (but not write)
   //control room has implicit permissions to post in announcements
-  var announcementsChannel = await guild.channels.create('announcements', {parent: hubCategory});
-  await announcementsChannel.updateOverwrite(guild.roles.everyone, {
-		'VIEW_CHANNEL': true,
-		'SEND_MESSAGES': false,
-		'READ_MESSAGE_HISTORY': true,
-		'ADD_REACTIONS': false
+  var announcementsChannel = await guild.channels.create({name: 'announcements', parent: hubCategory});
+  await announcementsChannel.permissionOverwrites.edit(guild.roles.everyone, {
+		ViewChannel: true,
+		SendMessages: false,
+		ReadMessageHistory: true,
+		AddReactions: false
   });
   announcementsChannel.send(guild.name + ' is committed to ensuring that Knowledge Bowl is safe, open, and welcoming for everyone. If anyone at this tournament makes you feel unsafe or unwelcome, please do not hesitate to reach out to anyone with the ' + controlRoomRole.toString() + ' or ' + staffRole.toString() + ' roles.');
 
 	//general channel won't be synced with hub category
 	//  so that @everyone can read and write it
-	var generalChannel = await guild.channels.create('general', {parent: hubCategory});
-	await generalChannel.updateOverwrite(guild.roles.everyone, {
-		'SEND_MESSAGES': true,
-		'VIEW_CHANNEL': true,
-		'ADD_REACTIONS': false
+	var generalChannel = await guild.channels.create({name: 'general', parent: hubCategory});
+	await generalChannel.permissionOverwrites.edit(guild.roles.everyone, {
+		SendMessages: true,
+		ViewChannel: true,
+		AddReactions: false
   });
 	generalChannel.setRateLimitPerUser(10);
 
 
-  var hallwayVoiceChannel = await guild.channels.create('hallway-voice', {parent: hubCategory, type: 'voice'});
+  var hallwayVoiceChannel = await guild.channels.create({name: 'hallway-voice', parent: hubCategory, type: ChannelType.GuildVoice});
 	//make some lounge channels for people to talk to each other
-	var loungeChannel = await guild.channels.create('lounge-text', {parent: hubCategory});
+	var loungeChannel = await guild.channels.create({name: 'lounge-text', parent: hubCategory});
 	loungeChannel.setRateLimitPerUser(10);
-	var loungeVoiceChannel1 = await guild.channels.create('lounge-voice-1', {parent: hubCategory, type: 'voice'});
-	var loungeVoiceChannel2 = await guild.channels.create('lounge-voice-2', {parent: hubCategory, type: 'voice'});
-	var loungeVoiceChannel3 = await guild.channels.create('lounge-voice-3', {parent: hubCategory, type: 'voice'});
-	var loungeVoiceChannel4 = await guild.channels.create('lounge-voice-4', {parent: hubCategory, type: 'voice'});
+	var loungeVoiceChannel1 = await guild.channels.create({name: 'lounge-voice-1', parent: hubCategory, type: ChannelType.GuildVoice});
+	var loungeVoiceChannel2 = await guild.channels.create({name: 'lounge-voice-2', parent: hubCategory, type: ChannelType.GuildVoice});
+	var loungeVoiceChannel3 = await guild.channels.create({name: 'lounge-voice-3', parent: hubCategory, type: ChannelType.GuildVoice});
+	var loungeVoiceChannel4 = await guild.channels.create({name: 'lounge-voice-4', parent: hubCategory, type: ChannelType.GuildVoice});
 
 
 	//Make a lounge for coaches to talk to each other
-	var coachesLoungeCategory = await guild.channels.create('Coaches Lounge', {type: 'category'});
-	await coachesLoungeCategory.updateOverwrite(guild.roles.everyone, {
-		'VIEW_CHANNEL': false
+	var coachesLoungeCategory = await guild.channels.create({name: 'Coaches Lounge', type: ChannelType.GuildCategory});
+	await coachesLoungeCategory.permissionOverwrites.edit(guild.roles.everyone, {
+		ViewChannel: false
 	});
-	await coachesLoungeCategory.updateOverwrite(staffRole, {
-		'VIEW_CHANNEL': true
+	await coachesLoungeCategory.permissionOverwrites.edit(staffRole, {
+		ViewChannel: true
 	});
-	await coachesLoungeCategory.updateOverwrite(coachRole, {
-		'VIEW_CHANNEL': true
+	await coachesLoungeCategory.permissionOverwrites.edit(coachRole, {
+		ViewChannel: true
 	});
-	var coachChannel = await guild.channels.create('coaches-text', {parent: coachesLoungeCategory});
-	var coachVoiceChannel1 = await guild.channels.create('coaches-voice-1', {parent: coachesLoungeCategory, type: 'voice'});
-	var coachVoiceChannel2 = await guild.channels.create('coaches-voice-2', {parent: coachesLoungeCategory, type: 'voice'});
-	var coachVoiceChannel3 = await guild.channels.create('coaches-voice-3', {parent: coachesLoungeCategory, type: 'voice'});
+	var coachChannel = await guild.channels.create({name: 'coaches-text', parent: coachesLoungeCategory});
+	var coachVoiceChannel1 = await guild.channels.create({name: 'coaches-voice-1', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
+	var coachVoiceChannel2 = await guild.channels.create({name: 'coaches-voice-2', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
+	var coachVoiceChannel3 = await guild.channels.create({name: 'coaches-voice-3', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
 
-
-  await guild.owner.roles.add(controlRoomRole);
-  await guild.setDefaultMessageNotifications('MENTIONS');
+  await (await guild.fetchOwner()).roles.add(controlRoomRole);
+  await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
   await guild.setSystemChannel(generalChannel);
 }
 
 var help = function (channel, sections) {
-  sections = sections || ['i', 'g', 'u', 'c', 'd', 'b', 'n', 'm', 'a', 'r', 't', 'e', 'p', 'w', 'l', 'o', 'h'];
+	//console.log("In help function");
+  sections = sections || ['i', 'g', 'u', 'c', 'd', 'b', 'n', 'a', 'r', 't', 'e', 'p', 'w', 'l', 'o', 'h'];
   var helpMessage = {
-		color: '#29bb9c', // same as discord aqua
+		color: 0x29bb9c, // same as discord aqua
 		title: 'CKB Bot Help',
 		description: 'This bot is able to perform initial server setup, create and delete rooms, and add, remove, or transfer teams to and from rooms. It supports both conventional bot-style syntax and natural language-style [NL-style] syntax. Commands acting on existing teams or rooms require you to tag the role of the team you are operating on and/or the text channels representing the rooms you are operating on. Unless otherwise stated, commands can only be run by users with the Control Room or Staff roles. **Multiple commands can be stacked in one message, as long as they are separated by newlines. Add --force to the end of your command to override having to confirm.**',
 		fields: []
@@ -465,7 +469,7 @@ var help = function (channel, sections) {
   if (sections.length < 9) {
 		helpMessage.description = '';
   }
-  channel.send({embed: helpMessage});
+  channel.send({embeds: [helpMessage]});
 }
 
 /*var schedule = async function (guild, docID, sheetIndex) {
@@ -648,13 +652,13 @@ var randomColor = function() {
 
 var addToHub = async function(guild, role) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
-	await generalChannel.parent.updateOverwrite(role, {
-		'VIEW_CHANNEL': true,
-		'SEND_MESSAGES': true,
-		'CONNECT': true,
-		'ADD_REACTIONS': true,
-		'READ_MESSAGE_HISTORY': true,
-		'SPEAK': true
+	await generalChannel.parent.permissionOverwrites.edit(role, {
+		ViewChannel: true,
+		SendMessages: true,
+		Connect: true,
+		AddReactions: true,
+		ReadMessageHistory: true,
+		Speak: true
 	});
 
 	//Announcements isn't synced with the hub category, so we need to add visibility
@@ -667,13 +671,13 @@ var lockdownOverwrite = async function(guild, hubCategory, coachPos, overwrite) 
 		throw 'Coach role deleted';
 	}
 	if(role.position < coachPos && role.name !== '@everyone') {
-		await hubCategory.updateOverwrite(role, {
-			'VIEW_CHANNEL': true,
-			'SEND_MESSAGES': false,
-			'CONNECT': true,
-			'ADD_REACTIONS': false,
-			'READ_MESSAGE_HISTORY': true,
-			'SPEAK': false
+		await hubCategory.permissionOverwrites.edit(role, {
+			ViewChannel: true,
+			SendMessages: false,
+			Connect: true,
+			AddReactions: false,
+			ReadMessageHistory: true,
+			Speak: false
 		});
 	}
 	return Promise.resolve("Success");
@@ -685,13 +689,13 @@ var allowSpeakOverwrite = async function(guild, hallwayChannel, coachPos, overwr
 		throw 'Coach role deleted';
 	}
 	if(role.position < coachPos && role.name !== '@everyone') {
-		await hallwayChannel.updateOverwrite(role, {
-			'VIEW_CHANNEL': true,
-			'SEND_MESSAGES': false,
-			'CONNECT': true,
-			'ADD_REACTIONS': false,
-			'READ_MESSAGE_HISTORY': true,
-			'SPEAK': true
+		await hallwayChannel.permissionOverwrites.edit(role, {
+			ViewChannel: true,
+			SendMessages: false,
+			Connect: true,
+			AddReactions: false,
+			ReadMessageHistory: true,
+			Speak: true
 		});
 	}
 	return Promise.resolve("Success");
@@ -704,9 +708,9 @@ var lockdownLounge = async function(guild, message) {
 
 	//First modify hub, which changes all sync'd channels
 	{
-		var overwrites = hubCategory.permissionOverwrites.array();
+		var overwrites = hubCategory.permissionOverwrites.cache;
 		var promises = Array();
-		for (var overwrite of overwrites) {
+		for (var [flake, overwrite] of overwrites) {
 			promises.push(lockdownOverwrite(guild, hubCategory, pos, overwrite));
 		}
 		await Promise.all(promises);
@@ -715,9 +719,9 @@ var lockdownLounge = async function(guild, message) {
 	{
 		//Now modify hallway-voice to unsync and allow speaking
 		var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
-		var overwrites = hallwayChannel.permissionOverwrites.array();
+		var overwrites = hallwayChannel.permissionOverwrites.cache;
 		var promises = Array();
-		for (var overwrite of overwrites) {
+		for (var [flake, overwrite] of overwrites) {
 			promises.push(allowSpeakOverwrite(guild, hallwayChannel, pos, overwrite));
 		}
 		await Promise.all(promises);
@@ -730,13 +734,13 @@ var allowHubSpeakOverwrite = async function(guild, hubCategory, coachPos, overwr
 		throw 'Coach role deleted';
 	}
 	if(role.position < coachPos && role.name !== '@everyone') {
-		await hubCategory.updateOverwrite(role, {
-			'VIEW_CHANNEL': true,
-			'SEND_MESSAGES': true,
-			'CONNECT': true,
-			'ADD_REACTIONS': true,
-			'READ_MESSAGE_HISTORY': true,
-			'SPEAK': true
+		await hubCategory.permissionOverwrites.edit(role, {
+			ViewChannel: true,
+			SendMessages: true,
+			Connect: true,
+			AddReactions: true,
+			ReadMessageHistory: true,
+			Speak: true
 		});
 	}
 	return Promise.resolve("Success");
@@ -749,9 +753,9 @@ var unlockLounge = async function(guild) {
 
 	//First unmodify hub
 	{
-		var overwrites = hubCategory.permissionOverwrites.array();
+		var overwrites = hubCategory.permissionOverwrites.cache;
 		var promises = Array();
-		for (var overwrite of overwrites) {
+		for (var [flake, overwrite] of overwrites) {
 			promises.push(allowHubSpeakOverwrite(guild, hubCategory, pos, overwrite));
 		}
 		await Promise.all(promises);
@@ -766,13 +770,11 @@ var createTeam = async function (guild, name) {
 	var color = randomColor();
 	//console.log("Creating role " + name);
 	var teamRole = await guild.roles.create({
-		data: {
-			name: name,
-			color: color,
-			hoist: true,
-			mentionable: true//,
-			//position: 1
-		}
+		name: name,
+		color: color,
+		hoist: true,
+		mentionable: true//,
+		//position: 1
 	});
 	//console.log("Created role " + name);
 	//console.log("Creating loung " + name + " Lounge");
@@ -784,8 +786,8 @@ var createTeam = async function (guild, name) {
 	//console.log("Added role " + name + " to lounge " + loungeText.name);
 	//Overwrite default READ_MESSAGE_HISTORY from add function
 	//console.log("updating read_message_history for " + name);
-	await loungeText.parent.updateOverwrite(teamRole, {
-		'READ_MESSAGE_HISTORY': true
+	await loungeText.parent.permissionOverwrites.edit(teamRole, {
+		ReadMessageHistory: true
 	});
 	//console.log("updated read_message_history for " + name);
 	//console.log("Adding " + name + " to hub");
@@ -823,9 +825,11 @@ var confirm = async function (message, prompt, force, failCallback, successCallb
 
   message.channel.send(prompt).then(function (msg) {
 		msg.react('👍');
-		msg.awaitReactions(function (reaction, user) {
-	    return reaction.emoji.name === '👍' && user.id === message.author.id;
-		}, {time: 6000}).then(function (collected) {
+		//console.log("Waiting for reactions");
+		//console.log("Looking for reactions where user id is " + message.author.id);
+		const filter = (reaction, user) => reaction.emoji.name === '👍' && user.id === message.author.id;
+		msg.awaitReactions({ filter, time: 6000 })
+			.then(function (collected) {
 	    if (collected.size === 0) {
 				failCallback();
 	    } else {
@@ -837,6 +841,7 @@ var confirm = async function (message, prompt, force, failCallback, successCallb
 
 var processCommand = async function (command, message) {
 
+	//console.log("In processCommand, processing the command " + command);
 	//These are commands that can be run by anyone
 	if (command.indexOf('.w') === 0 && message.channel.name.indexOf("lounge") > -1) {
 		//Give them a secret code for their written
@@ -871,7 +876,9 @@ var processCommand = async function (command, message) {
 
 		message.channel.send('Hello ' + teamName + "! Your secret code for today's written is " + code);
 
-	} else if(hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.member === message.channel.guild.owner) {
+	} else if(hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.member === await message.channel.guild.fetchOwner()) {
+
+		//console.log("Is Control Room or Staff");
 
 		// var force = command.indexOf('--force') >= 0 ? 1 : 0;
 		var force = false;
@@ -1021,7 +1028,7 @@ var processCommand = async function (command, message) {
 				}
 				//check that they all look like competition rooms
 				for(var i=0; i<channels.length; i++) {
-					if(channels[i].parent.children.array().length != 2) {
+					if(channels[i].parent.children.cache.size != 2) {
 						message.channel.send('"' + channels[i].parent.name + '" does not look like a competition room.');
 						throw 'too many channels in a category for empty';
 					}
@@ -1045,50 +1052,59 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['e']);
 			}
-		} else if (command.indexOf('.i') === 0 && message.member === message.channel.guild.owner) {
+		} else if (command.indexOf('.i') === 0 && message.member === await(message.channel.guild.fetchOwner())) {
 			if(command.indexOf(message.channel.guild.name) < 0) {
 				help(message.channel, ['i']);
 			} else {
 				confirm(message, 'Are you sure you want to initialize the server ' + message.channel.guild.name + '? Every channel and role currently in the server will be deleted. Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The initialization is cancelled.');
 				}, function () {
-					init(message.channel.guild, message.channel).catch(function () {
+					init(message.channel.guild, message.channel).catch(function (e) {
+						console.error(e);
 						help(message.channel, ['i']);
 					});
 				});
 			}
-		} else if (command.indexOf('.z') === 0 && message.member === message.channel.guild.owner) {
-			console.log("Writing member update log.");
-			const fetchedLogs = await message.guild.fetchAuditLogs({
-				type: 'MEMBER_UPDATE',
-				limit: 1,
-			});
-			var outData = ""
-			var prevEntry = fetchedLogs.entries.first();
-			let {executor, target, changes} = prevEntry;
-			outData += executor.tag + " changed " + target.tag + " " + changes['0'].key +
-				" from " + changes['0'].old + " to " + changes['0'].new + "\n";
-			while(1) {
+		} else if (command.indexOf('.z') === 0 && message.member === await message.channel.guild.fetchOwner() && message.member.user === (await client.application.fetch()).owner) {
+
+			message.channel.send('Writing member update log to server . . . ');
+			try {
+				console.log("Writing member update log.");
 				const fetchedLogs = await message.guild.fetchAuditLogs({
-					type: 'MEMBER_UPDATE',
-					limit: 100,
-					before: prevEntry,
+					type: AuditLogEvent.MemberUpdate,
+					limit: 1,
 				});
-				if(!fetchedLogs.entries.size) {
-					break;
+				var outData = ""
+				var prevEntry = fetchedLogs.entries.first();
+				let {executor, target, changes} = prevEntry;
+				outData += executor.tag + " changed " + target.tag + " " + changes['0'].key +
+					" from " + changes['0'].old + " to " + changes['0'].new + "\n";
+				while(1) {
+					const fetchedLogs = await message.guild.fetchAuditLogs({
+						type: AuditLogEvent.MemberUpdate,
+						limit: 100,
+						before: prevEntry,
+					});
+					if(!fetchedLogs.entries.size) {
+						break;
+					}
+					fetchedLogs.entries.forEach(tempLog => {
+						let {executor, target, changes} = tempLog;
+						outData += executor.tag + " changed " + target.tag + " " + changes['0'].key +
+							" from " + changes['0'].old + " to " + changes['0'].new + "\n";
+					});
+					prevEntry = fetchedLogs.entries.last();
 				}
-				fetchedLogs.entries.forEach(tempLog => {
-					let {executor, target, changes} = tempLog;
-					outData += executor.tag + " changed " + target.tag + " " + changes['0'].key +
-						" from " + changes['0'].old + " to " + changes['0'].new + "\n";
+				fs.writeFile("MemberUpdateLog.txt", outData, function (err) {
+					if(err) return console.log(err);
+					console.log("Wrote member update log.");
+					message.channel.send('Wrote member update log to server.');
+
 				});
-				prevEntry = fetchedLogs.entries.last();
-				console.log(prevEntry.executor.tag);
+			} catch (e) {
+				console.log(e)
+				message.channel.send('Failed to write member update log to server.');
 			}
-			fs.writeFile("MemberUpdateLog.txt", outData, function (err) {
-				if(err) return console.log(err);
-				console.log("Wrote member update log.");
-			});
 		} else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
 			try {
 				var content = command.substr(command.indexOf(' ') + 1).trim();
@@ -1225,9 +1241,15 @@ var processCommand = async function (command, message) {
 		} else if (command.indexOf('.d') === 0 && hasRole(message.member, 'Control Room')) {
 			try {
 				var channels = mentions.channels;
+
+				//Check that there are channels
+				if(channels.length < 1) {
+					message.channel.send("No channel mentions found.  Make sure to use hash references to the text channel in a room.");
+					throw 'No channel mentions.'
+				}
 				//check that they all look like competition rooms
 				for(var i=0; i<channels.length; i++) {
-					if(channels[i].parent.children.array().length != 2) {
+					if(channels[i].parent.children.cache.size != 2) {
 						message.channel.send('"' + channels[i].parent.name + '" does not look like a competition room.  Please delete it manually.');
 						throw 'too many channels in a category for delete';
 					}
@@ -1341,15 +1363,8 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['b', 'n', 'm']);
 			}
-		} else if (command.indexOf('.m') === 0 && hasRole(message.member, 'Control Room')) {
+		/*} else if (command.indexOf('.m') === 0 && hasRole(message.member, 'Control Room')) {
 			try {
-				/*
-					var spaceIndex = command.trim().indexOf(' ');
-					if (spaceIndex === -1) {
-					throw 'No range provided to .m, sending help dialog to channel.';
-					}
-					var range = command.substr(spaceIndex + 1).trim();
-				*/
 				var range = command.split(/\s+/g)[1];
 				confirm(message, 'Are you sure you want to mass create teams from the range ' + range + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The creation is cancelled.');
@@ -1370,7 +1385,7 @@ var processCommand = async function (command, message) {
 			} catch (e) {
 				console.error(e);
 				help(message.channel, ['b', 'n', 'm']);
-			}
+			}*/
 			/*} else if (command.indexOf('.b') === 0 && hasRole(message.member, 'Control Room')) {
 				var bitrate = NaN;
 				try {
@@ -1419,6 +1434,7 @@ var processCommand = async function (command, message) {
 							console.error(error);
 							help(message.channel, ['g','u']);
 						});
+						message.channel.send("Added " + users[i].toString() + " to Control Room.");
 					}
 				});
 			} catch(e) {
@@ -1459,6 +1475,7 @@ var processCommand = async function (command, message) {
 							console.error(error);
 							help(message.channel, ['g', 'u']);
 						});
+						message.channel.send("Removed " + users[i].toString() + " from Control Room.");
 					}
 				});
 			} catch(e) {
@@ -1492,24 +1509,43 @@ var processCommand = async function (command, message) {
   return;
 };
 
-client.on('message', async function (message) {
+client.on('messageCreate', async function (message) {
+	//console.log(message);
 	var content = message.content.split('\n');
 	for (var str of content) {
+		//console.log("processing " + str);
+		//console.log("Send by " + message.member);
+		//console.log("guild owner: " + await(message.channel.guild.fetchOwner()));
 		await processCommand(str, message);
 	}
   return;
 });
 
 client.login(config.BOT_TOKEN);
-client.on('ready', function () {
-  for (var guild of client.guilds.cache.array()) {
+
+client.once(Events.ClientReady, c => {
+  for(var [flake, guild] of client.guilds.cache) {
 		try {
 			console.log(guild.name + ' ' + guild.owner.user.tag);
 		} catch (e) {
 			console.log(guild.name);
 		}
   }
+	c.user.setActivity('.help', {type: 'LISTENING'});
+	console.log(`Ready!  Logged in as ${c.user.tag}`);
+});
+
+/*
+client.on('ready', function () {
+  client.guilds.cache.forEach(guild => {
+		try {
+			console.log(guild.name + ' ' + guild.owner.user.tag);
+		} catch (e) {
+			console.log(guild.name);
+		}
+  });
   client.user.setActivity('.help', {type: 'LISTENING'}).then(function () {
 		console.log('up and running!');
   }).catch(console.error);
 });
+*/
