@@ -1,4 +1,4 @@
-const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, Colors, ChannelType, AuditLogEvent } = require('discord.js');
+const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, PermissionsBitField, Colors, ChannelType, AuditLogEvent } = require('discord.js');
 const fs = require('fs');
 const client = new Client({ intents: [GatewayIntentBits.Guilds,
 																			GatewayIntentBits.GuildMessages,
@@ -184,13 +184,38 @@ var removeSendReactHistory = async function(overwrite) {
 
 var disableVoiceChannelChatInCategory = async function(category) {
 	var promises = Array();
+
 	for(var [flake, channel] of category.children.cache) {
 		if (channel.type === ChannelType.GuildVoice) {
 			var overwrites = channel.permissionOverwrites.cache;
+			var newPerms = Array();
 			for(var [flake2, overwrite] of overwrites) {
-				console.log("overwriting permissions on " + overwrite.channel.name + " for " + overwrite.channel.guild.roles.cache.find(r => r.id === overwrite.id).name);
-				promises.push(removeSendReactHistory(overwrite));
+				var currPerms = {};
+				currPerms.id = overwrite.id;
+				var allow = overwrite.allow
+				var deny = overwrite.deny
+				allow = allow.remove([PermissionFlagsBits.SendMessages,
+															PermissionFlagsBits.AddReactions,
+															PermissionFlagsBits.ReadMessageHistory]);
+				deny = deny.add([PermissionFlagsBits.SendMessages,
+												 PermissionFlagsBits.AddReactions,
+												 PermissionFlagsBits.ReadMessageHistory]);
+				newPerms.push({
+					id: overwrite.id,
+					allow: allow,
+					deny: deny
+				});
+				//await channel.permissionOverwrites.set([
+					//{
+						//id: overwrite.id,
+						//deny: [PermissionFlagsBits.SendMessages,
+									 //PermissionFlagsBits.AddReactions,
+									 //PermissionFlagsBits.ReadMessageHistory]
+					//}]);
+
+				//promises.push(removeSendReactHistory(overwrite));
 			}
+			await channel.permissionOverwrites.set(newPerms);
 			//var roles = category.guild.roles.cache;
 			//for(var [flake2, role] of roles) {
 				//console.log("  Removing access for " + role.name);
@@ -878,7 +903,7 @@ var unlockLounge = async function(guild, message) {
 
 	//move all lounge channels back to hub
 	//then sync with hub and remodify voice chat permissions
-	message.channel.send("  Moving lounge channels back to Hub...");
+	message.channel.send("--Moving lounge channels back to Hub . . .");
 	var promises = Array();
 	for(var [flake, channel] of lockdownCategory.children.cache) {
 		if(channel.name.match(/lounge/)) {
@@ -886,9 +911,7 @@ var unlockLounge = async function(guild, message) {
 		}
 	}
 	await Promise.all(promises);
-	message.channel.send("  Syncing voice channels to hub permissions...");
-	await syncVoiceChannelsToCategory(hubCategory);
-	message.channel.send("  Removing voice channel chat permissions in hub ...");
+	message.channel.send("--Removing voice channel chat permissions in hub . . .");
 	await disableVoiceChannelChatInCategory(hubCategory);
 
 	lockdownCategory.delete();
@@ -1525,9 +1548,9 @@ var processCommand = async function (command, message) {
 						// I could just disable voice channel chat.
 						message.channel.send("Adjusting permissions in hub ...");
 						var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
-						message .channel.send("  Syncing voice channels to category");
+						message .channel.send("--Syncing voice channels to category");
 						await syncVoiceChannelsToCategory(generalChannel.parent);
-						message .channel.send("  Disabling voice chat channels");
+						message .channel.send("--Disabling voice chat channels");
 						await disableVoiceChannelChatInCategory(generalChannel.parent);
 						message.channel.send("Done");
 					} catch (e) {
@@ -1688,6 +1711,12 @@ var processCommand = async function (command, message) {
 									help(message.channel, ['l', 'o']);
 								});
 							});
+		} else if (command.indexOf('.k') == 0 && hasRole(message.member, 'Control Room')) {
+			var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
+			var hubCategory = generalChannel.parent;
+			console.log("Hub: " + hubCategory);
+			const tempPermissions = generalChannel.parent.permissionOverwrites;
+			console.log(tempPermissions)
 		} else if (command.indexOf('.h') === 0) {
 			help(message.channel);
 		} else if (command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff'))) {
