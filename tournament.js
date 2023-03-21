@@ -17,7 +17,7 @@ var helpSections = {
 		value: 'This command can only be run by users with the Control Room role.  It assigns the Control Room role.  __BE CAREFUL WITH THIS.__  Anyone with the Control Room role can add others to control room, block users, delete rooms, and delete the server.  They have full administrative access, so be sure everyone who has Control Room understands their great power and great responsibility.\nExample bot-style usage: `.g @username`\nExample NL-style usage: `.grant-control-room @username`'
 	},
 	'u': {
-		name: 'Ungrant Control Room Privileges',
+		name: 'Un-grant Control Room Privileges',
 		value: 'This command can only be run by users with the Control Room role.  It removes the Control Room role from a user.\nExample bot-style usage: `.u @username`\nExampleNL-style usage: `.ungrant-control-room @username`'
 	},
   'c': {
@@ -100,9 +100,10 @@ var hasRole = function (member, roleName) {
 var lockPerms = async function (channel) {
   // syncs channel's perms with its parent category
   await channel.lockPermissions();
-  await channel.lockPermissions();
-  await channel.lockPermissions();
-  await channel.lockPermissions();
+  //await channel.lockPermissions();
+  //await channel.lockPermissions();
+  //await channel.lockPermissions();
+	return Promise.resolve("Success");
 }
 
 const USERS_PATTERN = /<@!?(\d{17,19})>/;
@@ -172,6 +173,76 @@ var coachPosition = async function(guild) {
 	return coachRole.position;
 }
 
+var removeSendReactHistory = async function(overwrite) {
+	await overwrite.edit({
+		SendMessages: false,
+		AddReactions: false,
+		ReadMessageHistory: false
+	});
+	return Promise.resolve("Success");
+}
+
+var disableVoiceChannelChatInCategory = async function(category) {
+	var promises = Array();
+	for(var [flake, channel] of category.children.cache) {
+		if (channel.type === ChannelType.GuildVoice) {
+			var overwrites = channel.permissionOverwrites.cache;
+			for(var [flake2, overwrite] of overwrites) {
+				console.log("overwriting permissions on " + overwrite.channel.name + " for " + overwrite.channel.guild.roles.cache.find(r => r.id === overwrite.id).name);
+				promises.push(removeSendReactHistory(overwrite));
+			}
+			//var roles = category.guild.roles.cache;
+			//for(var [flake2, role] of roles) {
+				//console.log("  Removing access for " + role.name);
+				//channel.permissionOverwrites.edit(role, {
+					//SendMessages: false,
+					//AddReactions: false,
+					//ReadMessageHistory: false
+				//});
+			//}
+		}
+	}
+	await Promise.all(promises);
+}
+
+var syncVoiceChannelsToCategory = async function(category) {
+	var promises = Array();
+	for(var [flake, channel] of category.children.cache) {
+		if (channel.type === ChannelType.GuildVoice) {
+			promises.push(lockPerms(channel));
+		}
+	}
+	await Promise.all(promises);
+}
+
+//Does not fix voice channel permissions
+var addTeamToRoom = async function(role, to, channel) {
+  await to.permissionOverwrites.edit(role, {
+		ViewChannel: true,
+		SendMessages: true,
+		Connect: true,
+		AddReactions: true,
+		ReadMessageHistory: false,
+		Speak: true
+		//'USE_EXTERNAL_EMOJIS': true,
+		//'ATTACH_FILES': true,
+		//'EMBED_LINKS': true
+  });
+	if(channel) {
+		channel.send('Team ' + role.name + ' has been added to room "' + to.name + '."');
+	}
+	return Promise.resolve("Success");
+}
+
+var addTeamsToRoom = async function(roles, to, channel) {
+	var promises = Array();
+	for(var i=0; i<roles.length; i++) {
+		var currRole = roles[i];
+		promises.push(addTeamToRoom(currRole, to));
+	}
+	await Promise.all(promises);
+}
+
 var add = async function (role, to) {
   await to.permissionOverwrites.edit(role, {
 		ViewChannel: true,
@@ -184,6 +255,10 @@ var add = async function (role, to) {
 		//'ATTACH_FILES': true,
 		//'EMBED_LINKS': true
   });
+	for(var [flake, channel] of to.children.cache) {
+		await lockPerms(channel);
+	}
+	await disableVoiceChannelChatInCategory(to);
   //var children = to.children.array();
   //await lockPerms(children[0]);
   //await lockPerms(children[1]);
@@ -191,8 +266,13 @@ var add = async function (role, to) {
 }
 
 var remove = async function (role, from) {
-  await from.permissionOverwrites.delete(role);//edit(role, {
-		//ViewChannel: false,
+  await from.permissionOverwrites.delete(role);
+	for(var [flake, channel] of from.children.cache) {
+		await lockPerms(channel);
+	}
+	await disableVoiceChannelChatInCategory(from);
+	//edit(role, {
+	  //ViewChannel: false,
 		//SendMessages: false,
 		//Connect: false,
 		//AddReactions: false,
@@ -234,6 +314,11 @@ var empty = async function (room) {
 	    await overwrite.delete();
 		}
   }
+	for(var [flake, channel] of room.children.cache) {
+		await lockPerms(channel);
+	}
+	await disableVoiceChannelChatInCategory(room);
+
   //var children = room.children.array();
   //await lockPerms(children[0]);
   //await lockPerms(children[1]);
@@ -376,6 +461,7 @@ var init = async function (guild) {
   var readerRoomChannel = await guild.channels.create({name: 'reader-room', parent: controlRoomCategory});
   var readerRoomVoiceChannel = await guild.channels.create({name: 'reader-room-voice', parent: controlRoomCategory, type: ChannelType.GuildVoice});
   var readerRoomVoice2Channel = await guild.channels.create({name: 'reader-room-voice-2', parent: controlRoomCategory, type: ChannelType.GuildVoice});
+	disableVoiceChannelChatInCategory(controlRoomCategory);
 
 
 	//Hub is where students get announcements and interact with each other
@@ -414,7 +500,7 @@ var init = async function (guild) {
 		ViewChannel: true,
 		AddReactions: false
   });
-	generalChannel.setRateLimitPerUser(10);
+	generalChannel.setRateLimitPerUser(3);
 
 
   var hallwayVoiceChannel = await guild.channels.create({name: 'hallway-voice', parent: hubCategory, type: ChannelType.GuildVoice});
@@ -425,6 +511,10 @@ var init = async function (guild) {
 	var loungeVoiceChannel2 = await guild.channels.create({name: 'lounge-voice-2', parent: hubCategory, type: ChannelType.GuildVoice});
 	var loungeVoiceChannel3 = await guild.channels.create({name: 'lounge-voice-3', parent: hubCategory, type: ChannelType.GuildVoice});
 	var loungeVoiceChannel4 = await guild.channels.create({name: 'lounge-voice-4', parent: hubCategory, type: ChannelType.GuildVoice});
+	//Voice channels won't be synced, either, so that I can
+	// disable the text chat on them.  So they'll be regularly synced,
+	// then disabled over and over and over because . . . Discord.
+	disableVoiceChannelChatInCategory(hubCategory);
 
 
 	//Make a lounge for coaches to talk to each other
@@ -442,6 +532,8 @@ var init = async function (guild) {
 	var coachVoiceChannel1 = await guild.channels.create({name: 'coaches-voice-1', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
 	var coachVoiceChannel2 = await guild.channels.create({name: 'coaches-voice-2', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
 	var coachVoiceChannel3 = await guild.channels.create({name: 'coaches-voice-3', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
+	disableVoiceChannelChatInCategory(coachesLoungeCategory);
+
 
   await (await guild.fetchOwner()).roles.add(controlRoomRole);
   await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
@@ -701,31 +793,58 @@ var allowSpeakOverwrite = async function(guild, hallwayChannel, coachPos, overwr
 	return Promise.resolve("Success");
 }
 
+var moveChannelAndSync = async function(destinationCategory, channel) {
+	await channel.setParent(destinationCategory);
+	await lockPerms(channel);
+	return Promise.resolve("Success");
+}
+
 var lockdownLounge = async function(guild, message) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
 	var hubCategory = generalChannel.parent;
-	var pos = await coachPosition(guild);
-
-	//First modify hub, which changes all sync'd channels
-	{
-		var overwrites = hubCategory.permissionOverwrites.cache;
-		var promises = Array();
-		for (var [flake, overwrite] of overwrites) {
-			promises.push(lockdownOverwrite(guild, hubCategory, pos, overwrite));
-		}
-		await Promise.all(promises);
+	var lockdownCategory = await guild.channels.cache.find(channel => channel.name === "Lockdown Lounge");
+	if(!lockdownCategory) {
+		lockdownCategory = await guild.channels.create({name: 'Lockdown Lounge',
+																										type: ChannelType.GuildCategory});
+		lockdownCategory.permissionOverwrites.edit(guild.roles.everyone, {
+			ViewChannel: false
+		});
 	}
 
-	{
+	//var pos = await coachPosition(guild);
+
+
+	//Move all lounge channels to the lockdown lounge and sync permissions there
+	var promises = Array();
+	for(var [flake, channel] of hubCategory.children.cache) {
+		if(channel.name.match(/lounge/)) {
+			promises.push(moveChannelAndSync(lockdownCategory, channel));
+		}
+	}
+	await Promise.all(promises);
+
+	//First modify hub, which changes all sync'd channels, which is just the lounge text
+	//{
+		//var overwrites = hubCategory.permissionOverwrites.cache;
+		//var promises = Array();
+		//for (var [flake, overwrite] of overwrites) {
+			//promises.push(lockdownOverwrite(guild, hubCategory, pos, overwrite));
+		//}
+		//await Promise.all(promises);
+	//}
+
+	//Previously, hallway voice was sync'd with hub
+	//Now, it's not, so I don't have to do anything.
+	//{
 		//Now modify hallway-voice to unsync and allow speaking
-		var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
-		var overwrites = hallwayChannel.permissionOverwrites.cache;
-		var promises = Array();
-		for (var [flake, overwrite] of overwrites) {
-			promises.push(allowSpeakOverwrite(guild, hallwayChannel, pos, overwrite));
-		}
-		await Promise.all(promises);
-	}
+		//var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
+		//var overwrites = hallwayChannel.permissionOverwrites.cache;
+		//var promises = Array();
+		//for (var [flake, overwrite] of overwrites) {
+			//promises.push(allowSpeakOverwrite(guild, hallwayChannel, pos, overwrite));
+		//}
+		//await Promise.all(promises);
+	//}
 }
 
 var allowHubSpeakOverwrite = async function(guild, hubCategory, coachPos, overwrite) {
@@ -746,24 +865,47 @@ var allowHubSpeakOverwrite = async function(guild, hubCategory, coachPos, overwr
 	return Promise.resolve("Success");
 }
 
-var unlockLounge = async function(guild) {
+var unlockLounge = async function(guild, message) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
 	var hubCategory = generalChannel.parent;
-	var pos = await coachPosition(guild);
+	var lockdownCategory = await guild.channels.cache.find(channel => channel.name === "Lockdown Lounge");
+	//var pos = await coachPosition(guild);
 
-	//First unmodify hub
-	{
-		var overwrites = hubCategory.permissionOverwrites.cache;
-		var promises = Array();
-		for (var [flake, overwrite] of overwrites) {
-			promises.push(allowHubSpeakOverwrite(guild, hubCategory, pos, overwrite));
-		}
-		await Promise.all(promises);
+	if(!lockdownCategory) {
+		message.channel.send("Cannot find \"Lockdown Lounge\" category to restore.")
+		return;
 	}
 
+	//move all lounge channels back to hub
+	//then sync with hub and remodify voice chat permissions
+	message.channel.send("  Moving lounge channels back to Hub...");
+	var promises = Array();
+	for(var [flake, channel] of lockdownCategory.children.cache) {
+		if(channel.name.match(/lounge/)) {
+			promises.push(moveChannelAndSync(hubCategory, channel));
+		}
+	}
+	await Promise.all(promises);
+	message.channel.send("  Syncing voice channels to hub permissions...");
+	await syncVoiceChannelsToCategory(hubCategory);
+	message.channel.send("  Removing voice channel chat permissions in hub ...");
+	await disableVoiceChannelChatInCategory(hubCategory);
+
+	lockdownCategory.delete();
+
+	//First unmodify hub
+	//{
+		//var overwrites = hubCategory.permissionOverwrites.cache;
+		//var promises = Array();
+		//for (var [flake, overwrite] of overwrites) {
+			//promises.push(allowHubSpeakOverwrite(guild, hubCategory, pos, overwrite));
+		//}
+		//await Promise.all(promises);
+	//}
+
 	//sync hallway-voice with hub
-	var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
-	await lockPerms(hallwayChannel);
+	//var hallwayChannel = await guild.channels.cache.find(channel => channel.name === "hallway-voice");
+	//await lockPerms(hallwayChannel);
 }
 
 var createTeam = async function (guild, name) {
@@ -777,12 +919,12 @@ var createTeam = async function (guild, name) {
 		//position: 1
 	});
 	//console.log("Created role " + name);
-	//console.log("Creating loung " + name + " Lounge");
+	//console.log("Creating lounge " + name + " Lounge");
 	var loungeText = await createRoom(guild, name + ' Lounge', true);
-	//console.log("Created loung " + name + " Lounge");
+	//console.log("Created lounge " + name + " Lounge");
 	//console.log("Adding role " + name + " to lounge " + loungeText.name);
 	await add(teamRole, loungeText.parent);
-	await add(teamRole, loungeText.parent);
+	//await add(teamRole, loungeText.parent);
 	//console.log("Added role " + name + " to lounge " + loungeText.name);
 	//Overwrite default READ_MESSAGE_HISTORY from add function
 	//console.log("updating read_message_history for " + name);
@@ -802,12 +944,19 @@ var massCreateTeams = async function (guild, prefix, startIndex, endIndex) {
 		var name = prefix + String(i);
 		await createTeam(guild, name);
   }
+	//sync all voice channels with category, then
+	// disable the chat channel in the voice channels
+	//I don't see a better way to do this.  I wish
+	// I could just disable voice channel chat.
+	await syncVoiceChannelsToCategory(generalChannel.parent);
+	disableVoiceChannelChatInCategory(generalChannel.parent);
+
   return;
 }
 
 var setGuildBitrate = async function (bitrate, guild) {
   for (var channel of guild.channels.cache.array()) {
-		if (channel.type === 'voice') {
+		if (channel.type === ChannelType.GuildVoice) {
 	    await channel.setBitrate(bitrate * 1000);
 			//	    console.log('set bitrate for ' + channel.name);
 		}
@@ -896,6 +1045,9 @@ var processCommand = async function (command, message) {
 			try {
 				var roles = mentions.roles;
 				var channels = mentions.channels;
+				if(channels.length == 0) {
+					throw 'No channel specified';
+				}
 				var to = channels[0].parent;
 				if(to.name == "Control Room" || to.name == "Hub") {
 					message.channel.send('Cannot add or remove from "' + to.name + '"');
@@ -929,16 +1081,24 @@ var processCommand = async function (command, message) {
 				}
 				confirm(message, 'Are you sure you want to add team(s) ' + roleNames + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The addition is cancelled.');
-				}, function () {
+				}, async function () {
+					var promises = Array();
 					for(var i=0; i<roles.length; i++) {
 						var currRole = roles[i];
-						add(currRole, to).then(function (teamName) {
-							message.channel.send('Team ' + teamName + ' has been added to room "' + to.name + '."');
-						}).catch(function (error) {
-							console.error(error);
+						try {
+							promises.push(addTeamToRoom(currRole, to, message.channel));
+						} catch (e) {
+							console.error(e)
 							help(message.channel, ['a']);
-						});
+						}
 					}
+					await Promise.all(promises);
+					//sync all voice channels with category, then
+					// disable the chat channel in the voice channels
+					//I don't see a better way to do this.  I wish
+					// I could just disable voice channel chat.
+					await syncVoiceChannelsToCategory(to);
+					await disableVoiceChannelChatInCategory(to);
 				});
 			} catch (e) {
 				console.error(e);
@@ -1342,21 +1502,37 @@ var processCommand = async function (command, message) {
 
 				confirm(message, 'Are you sure you want to create the team[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The new team creation is cancelled.');
-				}, function () {
-					for (var i = 1; i < names.length; i += 2) {
-						var name = names[i];
-						//if(!name.match(Exp)) {
+				}, async function () {
+					try {
+						for (var i = 1; i < names.length; i += 2) {
+							var name = names[i];
+							//if(!name.match(Exp)) {
 							//console.log("Something isn't right");//messsage.channel.send("Something isn't right");
 							//throw "Bad name.  Check your .n command";
-						//}
-						//console.log("Creating team " + name );
-						createTeam(message.channel.guild, name).then(function (teamName) {
-							message.channel.send('Team "' + teamName + '" has been created.');
-						}).catch(function (error) {
-							console.error(error);
-							message.channel.send('Team "' + name + '" could not be created. Please try using a different name.');
-							help(message.channel, ['b', 'n', 'm']);
-						});
+							//}
+							//console.log("Creating team " + name );
+							await createTeam(message.channel.guild, name).then(function (teamName) {
+								message.channel.send('Team "' + teamName + '" has been created.');
+							}).catch(function (error) {
+								console.error(error);
+								message.channel.send('Team "' + name + '" could not be created. Please try using a different name.');
+								help(message.channel, ['b', 'n', 'm']);
+							});
+						}
+						//sync all voice channels with category, then
+						// disable the chat channel in the voice channels
+						//I don't see a better way to do this.  I wish
+						// I could just disable voice channel chat.
+						message.channel.send("Adjusting permissions in hub ...");
+						var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
+						message .channel.send("  Syncing voice channels to category");
+						await syncVoiceChannelsToCategory(generalChannel.parent);
+						message .channel.send("  Disabling voice chat channels");
+						await disableVoiceChannelChatInCategory(generalChannel.parent);
+						message.channel.send("Done");
+					} catch (e) {
+						console.log(e.stack);
+						message.channel.send("Something went wrong creating the team");
 					}
 				});
 			} catch (e) {
@@ -1483,23 +1659,35 @@ var processCommand = async function (command, message) {
 				help(message.channel, ['g','u']);
 			}
 		} else if (command.indexOf('.l') === 0 && hasRole(message.member, 'Control Room')) {
-			message.channel.send("Locking down the lounge.  This could take a while . . . ");
-			lockdownLounge(message.channel.guild, message).then(function() {
-				message.channel.send('Lounge is locked down.');
-			}).catch(function (error) {
-				console.error(error);
-				message.channel.send("Lockdown failed.");
-				help(message.channel, ['l', 'o']);
-			});
+			confirm(message, 'Are you sure you want to lock down the lounge?  Confirm by reacting with \:thumbsup:.', force,
+							function () {
+								message.channel.send("No confirmation was received.  Locking the lounge canceled.");
+							},
+							function() {
+								message.channel.send("Locking down the lounge.  This could take a while . . . ");
+								lockdownLounge(message.channel.guild, message).then(function() {
+									message.channel.send('Lounge is locked down.');
+								}).catch(function (error) {
+									console.error(error);
+									message.channel.send("Lockdown failed.");
+									help(message.channel, ['l', 'o']);
+								});
+							});
 		} else if (command.indexOf('.o') === 0 && hasRole(message.member, 'Control Room')) {
-			message.channel.send("Unlocking the lounge.  This could take a while . . . ");
-			unlockLounge(message.channel.guild).then(function() {
-				message.channel.send('Lounge is unlocked.');
-			}).catch(function (error) {
-				console.error(error);
-				message.channel.send("Unlock failed.");
-				help(message.channel, ['l', 'o']);
-			});
+			confirm(message, 'Are you sure you want to open the lounge?  Confirm by reacting with \:thumbsup:.', force,
+							function() {
+								message.channel.send('No confirmation received.  Unlocking the lounge canceled.');
+							},
+							function() {
+								message.channel.send("Unlocking the lounge.  This could take a while . . . ");
+								unlockLounge(message.channel.guild, message).then(function() {
+									message.channel.send('Lounge is unlocked.');
+								}).catch(function (error) {
+									console.error(error);
+									message.channel.send("Unlock failed.");
+									help(message.channel, ['l', 'o']);
+								});
+							});
 		} else if (command.indexOf('.h') === 0) {
 			help(message.channel);
 		} else if (command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff'))) {
