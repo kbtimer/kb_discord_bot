@@ -408,7 +408,6 @@ var init = async function (guild) {
 													 PermissionFlagsBits.ViewChannel,
 													 PermissionFlagsBits.SendMessages,
 													 PermissionFlagsBits.ReadMessageHistory,
-													 PermissionFlagsBits.UseExternalEmojis,
 													 PermissionFlagsBits.AddReactions,
 													 PermissionFlagsBits.Connect,
 													 PermissionFlagsBits.Speak,
