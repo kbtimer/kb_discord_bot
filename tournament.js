@@ -88,8 +88,8 @@ var helpSections = {
 
 var hasRole = function (member, roleName) {
 	//console.log("Checking if " + member.guild.name + " has role " + roleName);
-	const roleNames = member.roles.cache.map(r => r.name);
-	if(roleNames.includes(roleName)) {
+	const roleNames = member?.roles?.cache?.map(r => r.name);
+	if(roleNames?.includes(roleName)) {
 		//console.log("Found role " + roleName);
 		return true;
 	}
@@ -1736,6 +1736,35 @@ client.on('messageCreate', async function (message) {
 	}
   return;
 });
+
+//////////////////////////////////////////////////////////////////////
+//Delete polls
+client.on('raw', async function(raw) {
+	//console.log(raw);
+	if(raw && raw.t && raw.t == 'MESSAGE_CREATE' && raw.d && raw.d.poll) {
+		const user = await client.users.fetch(raw.d.author.id);
+		const channel = client.channels.cache.get(raw.d.channel_id)
+		const guild = channel.guild;
+		const member = await guild.members.fetch(raw.d.author.id);
+		const msg = await channel.messages.fetch(raw.d.id);
+
+		if(!hasRole(member, 'Control Room')) {
+			var msgString = "Poll posted by \"" + member?.nickname + "\" (" + raw.d.author.id + ": " + raw.d.author.username + ") in \"" + channel.name + "\" with question \"" + raw.d.poll?.question?.text + "\" and options ";
+			var textOptions = [];
+			for(answer of raw.d.poll?.answers) {
+				textOptions.push("\"" + answer?.poll_media?.text + "\"")
+			}
+			msgString += textOptions.join(", ");
+			console.log(msgString);
+			let botChannel = guild?.channels?.cache?.find(channel => channel.name === "bot-commands");
+			botChannel?.send(msgString);
+			await msg?.delete();
+		}
+	}
+	return;
+});
+//Delete polls
+//////////////////////////////////////////////////////////////////////
 
 client.login(config.BOT_TOKEN);
 
