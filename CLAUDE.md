@@ -42,6 +42,8 @@ Everything lives in a single file, `tournament.js`:
 
 A **room** is a category containing `<name>-text` and `<name>-voice` (`createRoom`). Commands take the text channel as a mention and act on `channel.parent` (the category). Teams are added or removed by editing **the category's** permission overwrites for the team role (`add`, `remove`, `empty`). `Control Room` and `Hub` are protected from add and remove. So is any category with "lounge" in its name (team lounges, `Coaches Lounge`, `Lockdown Lounge`): `.a` and `.t` refuse them, `.r` refuses only to remove a team from its own lounge (`<Team> Lounge`), and `.c` refuses room names containing "lounge" so a competition room never matches.
 
+`createRoom` and `createTeam` are all-or-nothing: on failure they delete what they already made (`rollBack`) and rethrow, attaching anything they couldn't delete as `error.leftovers`, which `.c`/`.n` report via `leftoversMessage`. `.c` refuses names matching an existing category, and `.n` refuses a name whose `<Team> Lounge` category already exists.
+
 A **team** (`createTeam`, the `.n` command) is a role with a random color, plus a private `<Team> Lounge` room, plus view access to the Hub. `.n` builds `TEAM_CREATION_CONCURRENCY` teams at a time, then grants Hub access to all of them in one call (`addTeamsToHub`) and runs `syncHubChannels`.
 
 **Lockdown and open lounge** (`.l`/`.o`): these move every channel whose name matches `/lounge/` between `Hub` and a `Lockdown Lounge` category and re-sync permissions.

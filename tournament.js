@@ -1,4 +1,4 @@
-const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, PermissionsBitField, OverwriteType, Colors, ChannelType, AuditLogEvent, ActivityType } = require('discord.js');
+const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, PermissionsBitField, OverwriteType, Colors, ChannelType, AuditLogEvent, ActivityType, Role } = require('discord.js');
 const fs = require('fs');
 // Normally discord.js quietly waits out rate limits, which is right for the few-second waits that are
 // routine here. But some Discord limits last for days (servers get 250 new roles per 48 hours), and waiting
@@ -29,7 +29,7 @@ var helpSections = {
 	},
   'c': {
 		name: 'Create Room[s]',
-		value: 'This command can only be run by users with the Control Room role. Room names must be less than 90 characters long, cannot contain "lounge", and cannot be "Control Room" or "Hub". Surround the room names with double quotation marks. If you want to create multiple rooms at a time, separate the room names with spaces. \nExample bot-style usage: `.c "Room 1" "Room 2"`\nExample NL-style usage: `.create "Room 1" "Room 2"`'
+		value: 'This command can only be run by users with the Control Room role. Room names must be less than 90 characters long, cannot contain "lounge", cannot be "Control Room" or "Hub", and cannot match the name of a category that already exists. Surround the room names with double quotation marks. If you want to create multiple rooms at a time, separate the room names with spaces. \nExample bot-style usage: `.c "Room 1" "Room 2"`\nExample NL-style usage: `.create "Room 1" "Room 2"`'
   },
   //'f': {
 	//name: 'Create Finals Room',
@@ -441,13 +441,48 @@ var competitionRoomOverwrites = function (guild) {
 // The permissions are set as each channel is created rather than edited afterwards, which takes 3 API calls
 // instead of about 7. The text channel gets the category's overwrites, so it counts as synced; the voice
 // channel gets them with its built-in chat turned off (see disableVoiceChannelChatInCategory).
+// If any step fails, the channels already made are deleted (see rollBack) before the error is rethrown.
 var createRoom = async function (guild, name, overwrites = competitionRoomOverwrites(guild)) {
-  var category = await guild.channels.create({name: name, type: ChannelType.GuildCategory, permissionOverwrites: overwrites});
-  var cleanName = name.replace(/\s+/g, '-').toLowerCase();
-  var text = await guild.channels.create({name: cleanName + '-text', parent: category, permissionOverwrites: overwrites});
-  await guild.channels.create({name: cleanName + '-voice', parent: category, type: ChannelType.GuildVoice,
-															 permissionOverwrites: overwrites.map(withVoiceChatDenied)});
-  return text;
+	var made = [];
+	try {
+		var category = await guild.channels.create({name: name, type: ChannelType.GuildCategory, permissionOverwrites: overwrites});
+		made.push(category);
+		var cleanName = name.replace(/\s+/g, '-').toLowerCase();
+		var text = await guild.channels.create({name: cleanName + '-text', parent: category, permissionOverwrites: overwrites});
+		made.push(text);
+		made.push(await guild.channels.create({name: cleanName + '-voice', parent: category, type: ChannelType.GuildVoice,
+																					permissionOverwrites: overwrites.map(withVoiceChatDenied)}));
+		return text;
+	} catch (error) {
+		await rollBack(error, made);
+		throw error;
+	}
+}
+
+// Deletes the channels or roles a failed create made, newest first (so a category's channels go before the
+// category; deleting a category alone leaves its channels behind). Whatever can't be deleted is added to
+// error.leftovers as a description like 'channel "a-text"', for the caller to report with leftoversMessage.
+var rollBack = async function (error, made) {
+	error.leftovers = error.leftovers ?? [];
+	for (var thing of [...made].reverse()) {
+		var label = (thing instanceof Role ? 'role' : 'channel') + ' "' + thing.name + '"';
+		try {
+			await thing.delete();
+		} catch (deleteError) {
+			console.error('Could not clean up ' + label + ':', deleteError.message ?? deleteError);
+			error.leftovers.push(label);
+		}
+	}
+}
+
+// For a batch that had failures: a sentence naming the partly built roles and channels that couldn't be
+// cleaned up, or '' if there were none. Retrying a name is rejected while its leftovers still exist.
+var leftoversMessage = function (leftovers) {
+	if (leftovers.length === 0) {
+		return '';
+	}
+	return '\nThese partly built pieces could not be cleaned up; please delete them by hand before retrying: ' +
+		listNamesForMessage(leftovers, 'roles and channels') + '.';
 }
 
 var deleteRoom = async function (text) {
@@ -1123,8 +1158,20 @@ var createTeam = async function (guild, name) {
 		hoist: true,
 		mentionable: true
 	});
-	// Same permissions .a gives a team, except that teams can read their own lounge's history
-	await createRoom(guild, name + ' Lounge', [
+	// Same permissions .a gives a team, except that teams can read their own lounge's history.
+	// createRoom cleans up its own channels if it fails; the role is deleted here so the name can be retried.
+	// (A deleted role still counts toward Discord's role-creation limit.)
+	try {
+		await createTeamLounge(guild, name, teamRole);
+	} catch (error) {
+		await rollBack(error, [teamRole]);
+		throw error;
+	}
+	return teamRole;
+}
+
+var createTeamLounge = function (guild, name, teamRole) {
+	return createRoom(guild, name + ' Lounge', [
 		{ id: guild.roles.everyone.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
 		{ id: teamRole.id, type: OverwriteType.Role, allow: [
 			PermissionFlagsBits.ViewChannel,
@@ -1135,7 +1182,6 @@ var createTeam = async function (guild, name) {
 			PermissionFlagsBits.Speak
 		] }
 	]);
-	return teamRole;
 }
 
 // How many teams .n builds at once. Discord handles one channel creation at a time per server anyway, so
@@ -1575,6 +1621,14 @@ var processCommand = async function (command, message) {
 						message.channel.send("Room names cannot contain \"lounge\" or be \"Control Room\" or \"Hub\". The room name \"" + name + "\" doesn't meet these requirements.");
 						return;
 					}
+					// A second category with the same name would be indistinguishable in the channel list,
+					// and is what retrying a room after a failure used to create.
+					var lowerName = name.trim().toLowerCase();
+					if(message.guild.channels.cache.some(channel => channel.type === ChannelType.GuildCategory && channel.name.trim().toLowerCase() === lowerName) ||
+						 names.slice(1, i).some((other, j) => j % 2 === 0 && other.trim().toLowerCase() === lowerName)) {
+						message.channel.send("The room name \"" + name + "\" is already used by a category in this server or by another room in this command. No rooms were created.");
+						return;
+					}
 				}
 				await confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The creation is cancelled.');
@@ -1582,6 +1636,7 @@ var processCommand = async function (command, message) {
 					var roomNames = names.filter((n, idx) => idx % 2 === 1);
 					var failed = new Set();
 					var failReason = null;
+					var leftovers = [];
 					if (roomNames.length > 1) {
 						await message.channel.send('Creating ' + roomNames.length + ' rooms. Each room takes about a second; progress will be posted every ' +
 							(PROGRESS_INTERVAL_MS / 1000) + ' seconds . . .');
@@ -1593,6 +1648,7 @@ var processCommand = async function (command, message) {
 							console.error('Could not create room ' + name + ':', error.message ?? error);
 							failed.add(name);
 							failReason = failReason ?? rateLimitMessage(error);
+							leftovers.push(...(error.leftovers ?? []));
 						}).finally(roomDone);
 					}));
 					var created = roomNames.filter(n => !failed.has(n));
@@ -1602,7 +1658,7 @@ var processCommand = async function (command, message) {
 					}
 					if (failed.size > 0) {
 						await message.channel.send('Could not create ' + listNamesForMessage([...failed].map(n => '"' + n + '"'), 'rooms') + '. ' +
-							(failReason ?? 'Please try using different names.'));
+							(failReason ?? 'Please try using different names.') + leftoversMessage(leftovers));
 						if (!failReason) {
 							help(message.channel, ['c']);
 						}
@@ -1808,6 +1864,12 @@ var processCommand = async function (command, message) {
 						message.channel.send("The team name \"" + name + "\" is already used by a role in this server, by a role the bot needs, or by another team in this command. No teams were created.");
 						return;
 					}
+					// Normally the lounge goes with the role, but a failed creation can leave the lounge behind
+					var loungeName = (name + ' Lounge').toLowerCase();
+					if(message.guild.channels.cache.some(channel => channel.type === ChannelType.GuildCategory && channel.name.trim().toLowerCase() === loungeName)) {
+						message.channel.send("There is already a category named \"" + name + " Lounge\". Delete it before creating the team \"" + name + "\". No teams were created.");
+						return;
+					}
 				}
 
 				await confirm(message, 'Are you sure you want to create the team[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
@@ -1819,6 +1881,7 @@ var processCommand = async function (command, message) {
 						var createdRoles = [];
 						var failed = [];
 						var failReason = null;
+						var leftovers = [];
 						// Nothing else is posted until the teams are built, so say that work has started
 						await message.channel.send('Creating ' + teamNames.length + ' team' + (teamNames.length === 1 ? '' : 's') +
 							'. Each team takes about a second; progress will be posted every ' + (PROGRESS_INTERVAL_MS / 1000) + ' seconds . . .');
@@ -1831,6 +1894,7 @@ var processCommand = async function (command, message) {
 								console.error('Could not create team ' + name + ':', error.message ?? error);
 								failed.push(name);
 								failReason = failReason ?? rateLimitMessage(error);
+								leftovers.push(...(error.leftovers ?? []));
 							}
 							teamDone();
 						});
@@ -1841,9 +1905,9 @@ var processCommand = async function (command, message) {
 							(created.length > 0 ? ': ' + listNamesForMessage(created, 'teams') : '') + '.');
 						if (failed.length > 0) {
 							if (failReason) {
-								await message.channel.send('These teams could not be created: ' + listNamesForMessage(failed, 'teams') + '. ' + failReason);
+								await message.channel.send('These teams could not be created: ' + listNamesForMessage(failed, 'teams') + '. ' + failReason + leftoversMessage(leftovers));
 							} else {
-								await message.channel.send('These teams could not be created: ' + listNamesForMessage(failed, 'teams') + '. Please try using different names.');
+								await message.channel.send('These teams could not be created: ' + listNamesForMessage(failed, 'teams') + '. Please try using different names.' + leftoversMessage(leftovers));
 								help(message.channel, ['b', 'n']);
 							}
 						}
