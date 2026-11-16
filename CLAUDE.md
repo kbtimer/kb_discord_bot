@@ -49,7 +49,7 @@ A **room** is a category containing `<name>-text` and `<name>-voice` (`createRoo
 
 A **team** (`createTeam`, the `.n` command) is a role with a random color, plus a private `<Team> Lounge` room, plus view access to the Hub. `.n` builds `TEAM_CREATION_CONCURRENCY` teams at a time, then grants Hub access to all of them in one call (`addTeamsToHub`) and runs `syncHubChannels`. A name that is already a finished team (`existingTeamRole`: a team role with its lounge) is skipped rather than rejected, and `addTeamsToHub` only adds overwrites for roles that lack one, so re-running a `.n` whose Hub step failed finishes its teams without undoing lockdown.
 
-**Lockdown and open lounge** (`.l`/`.o`): these move every channel whose name matches `/lounge/` between `Hub` and a `Lockdown Lounge` category and re-sync permissions.
+**Lockdown and open lounge** (`.l`/`.o`): these move every channel whose name matches `/lounge/` between `Hub` and a `Lockdown Lounge` category and re-sync permissions. `moveLoungesAndSync` moves with `lockPermissions: false`, then syncs **every** lounge channel in the destination, not just the ones it moved, so rerunning `.l`/`.o` repairs a channel whose move worked but whose sync failed last time.
 
 ### Voice-channel text chat quirk
 
