@@ -57,15 +57,15 @@ var helpSections = {
 	//    },
   'a': {
 		name: 'Add Team(s) to Room',
-		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to add.\nExample bot-style usage: `.a @A2 @A3 #room-1-text`\nExample NL-style usage: `.add @A2 @A3 to #room-1-text`'
+		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to add. Teams cannot be added to lounges.\nExample bot-style usage: `.a @A2 @A3 #room-1-text`\nExample NL-style usage: `.add @A2 @A3 to #room-1-text`'
   },
   'r': {
 		name: 'Remove Team(s) from Room',
-		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to remove.\nExample bot-style usage: `.r @A2 @A3 #room-1-text`\nExample NL-style usage: `.remove @A2 @A3 from #room-1-text`'
+		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to remove. Teams cannot be removed from lounges.\nExample bot-style usage: `.r @A2 @A3 #room-1-text`\nExample NL-style usage: `.remove @A2 @A3 from #room-1-text`'
   },
   't': {
 		name: 'Transfer Team(s) between Rooms',
-		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles. It requires you to tag two channels; tag the room that you are transferring the teams __from__ first, and tag the channel that you are transferring the teams __to__ second.\nExample bot-style usage: `.t @A2 @A3 #room-1-text #room-3-text`\nExample NL-style usage: `.transfer @A2 @A3 from #room-1-text to #room-3-text`'
+		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles. It requires you to tag two channels; tag the room that you are transferring the teams __from__ first, and tag the channel that you are transferring the teams __to__ second. Neither can be a lounge.\nExample bot-style usage: `.t @A2 @A3 #room-1-text #room-3-text`\nExample NL-style usage: `.transfer @A2 @A3 from #room-1-text to #room-3-text`'
   },
   'e': {
 		name: 'Empty Room',
@@ -1286,6 +1286,12 @@ var processCommand = async function (command, message) {
 					message.channel.send('Cannot add or remove from "' + to.name + '"');
 					throw 'Cannot add or remove from "' + to.name + '"';
 				}
+				// Team lounges ("<Team> Lounge") are private to their team, and Coaches Lounge and Lockdown Lounge
+				// aren't rooms. .c rejects room names containing "lounge", so this never blocks a competition room.
+				if(/lounge/i.test(to.name)) {
+					message.channel.send('Cannot add teams to "' + to.name + '". Lounges are private; `.a` only adds teams to competition rooms.');
+					throw 'Cannot add to lounge "' + to.name + '"';
+				}
 				var pos = await coachPosition(message.guild);
 				if(pos < 0) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
@@ -1338,6 +1344,11 @@ var processCommand = async function (command, message) {
 					message.channel.send('Cannot add or remove from "' + from.name + '"');
 					throw 'Cannot add or remove from "' + from.name + '"';
 				}
+				// Lounges are private to their team (see .a); removing a team from one would lock it out of its own lounge
+				if(/lounge/i.test(from.name)) {
+					message.channel.send('Cannot remove teams from "' + from.name + '". Lounges are private; `.r` only removes teams from competition rooms.');
+					throw 'Cannot remove from lounge "' + from.name + '"';
+				}
 				var pos = await coachPosition(message.guild);
 				if(pos < 0) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
@@ -1381,6 +1392,14 @@ var processCommand = async function (command, message) {
 				if(from.name == "Control Room" || from.name == "Hub") {
 					message.channel.send('Cannot add or remove from "' + from.name + '"');
 					throw 'Cannot add or remove from "' + from.name + '"';
+				}
+				// Lounges are private to their team (see .a): transferring into one would let the wrong team in,
+				// and transferring out of one would lock a team out of its own lounge.
+				for(var room of [from, to]) {
+					if(/lounge/i.test(room.name)) {
+						message.channel.send('Cannot transfer teams into or out of "' + room.name + '". Lounges are private; `.t` only moves teams between competition rooms.');
+						throw 'Cannot transfer with lounge "' + room.name + '"';
+					}
 				}
 				var pos = await coachPosition(message.guild);
 				if(pos < 0) {

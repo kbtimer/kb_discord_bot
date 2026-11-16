@@ -40,7 +40,7 @@ Everything lives in a single file, `tournament.js`:
 - Roles: `Control Room` (Administrator), `Staff`, `Spectator`, `Coach`. Team roles must sit **below** `Coach`; `coachPosition()` is used to tell team roles from staff roles.
 - Categories: `Control Room` (staff-only channels, including `bot-commands`), `Hub` (`announcements`, `general`, `lounge-text`, `hallway-voice`, lounge voice channels), and `Coaches Lounge`.
 
-A **room** is a category containing `<name>-text` and `<name>-voice` (`createRoom`). Commands take the text channel as a mention and act on `channel.parent` (the category). Teams are added or removed by editing **the category's** permission overwrites for the team role (`add`, `remove`, `empty`). `Control Room` and `Hub` are protected from add and remove.
+A **room** is a category containing `<name>-text` and `<name>-voice` (`createRoom`). Commands take the text channel as a mention and act on `channel.parent` (the category). Teams are added or removed by editing **the category's** permission overwrites for the team role (`add`, `remove`, `empty`). `Control Room` and `Hub` are protected from add and remove. So is any category with "lounge" in its name (team lounges, `Coaches Lounge`, `Lockdown Lounge`): `.a`, `.r`, and `.t` refuse them, and `.c` refuses room names containing "lounge" so a competition room never matches.
 
 A **team** (`createTeam`, the `.n` command) is a role with a random color, plus a private `<Team> Lounge` room, plus view access to the Hub. `.n` builds `TEAM_CREATION_CONCURRENCY` teams at a time, then grants Hub access to all of them in one call (`addTeamsToHub`) and runs `syncHubChannels`.
 
