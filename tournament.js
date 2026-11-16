@@ -886,7 +886,8 @@ var init = async function (guild, commandChannel) {
 }
 
 var help = function (channel, sections) {
-	//console.log("In help function");
+	// The full help starts a second embed at the first of these (running rounds, after setup)
+	var breakBefore = sections ? null : 'a';
   sections = sections || ['i', 'g', 'u', 'c', 'd', 'b', 'n', 'a', 'r', 't', 'e', 'p', 'w', 'l', 'o', 'v', 'h'];
   var helpMessage = {
 		color: 0x29bb9c, // same as discord aqua
@@ -894,20 +895,39 @@ var help = function (channel, sections) {
 		description: 'This bot is able to perform initial server setup, create and delete rooms, and add, remove, or transfer teams to and from rooms. It supports both conventional bot-style syntax and natural language-style [NL-style] syntax. Commands acting on existing teams or rooms require you to tag the role of the team you are operating on and/or the text channels representing the rooms you are operating on. Unless otherwise stated, commands can only be run by users with the Control Room or Staff roles. **Multiple commands can be stacked in one message, as long as they are separated by newlines. Add --force to the end of your command to override having to confirm.**',
 		fields: []
   };
-  for (var section of sections) {
-		var helpSectionOrig = helpSections[section];
-		var helpSection = {
-			name: helpSectionOrig.name,
-			value: helpSectionOrig.value
-		};
-		helpSection.value = helpSection.value.replace(/\%ServerName\%/g, channel.guild.name)
-		helpMessage.fields.push(helpSection);
-  }
   if (sections.length < 9) {
 		helpMessage.description = '';
   }
-  channel.send({embeds: [helpMessage]});
+	// Discord rejects an embed whose text adds up to more than 6000 characters (or that has more than 25 fields),
+	// and the full help is close to that, so it is split in two (breakBefore), and another embed is started
+	// whenever the next field still wouldn't fit.
+	// Each embed goes in its own message, since the limit also covers all of one message's embeds together.
+	var embeds = [helpMessage];
+	var embedLength = helpMessage.title.length + helpMessage.description.length;
+  for (var section of sections) {
+		var helpSection = {
+			name: helpSections[section].name,
+			value: helpSections[section].value.replace(/\%ServerName\%/g, channel.guild.name)
+		};
+		var fieldLength = helpSection.name.length + helpSection.value.length;
+		var current = embeds[embeds.length - 1];
+		if (current.fields.length > 0 && (section === breakBefore || embedLength + fieldLength > MAX_EMBED_LENGTH ||
+				current.fields.length >= MAX_EMBED_FIELDS)) {
+			current = { color: helpMessage.color, title: helpMessage.title + ' (continued)', fields: [] };
+			embeds.push(current);
+			embedLength = current.title.length;
+		}
+		current.fields.push(helpSection);
+		embedLength += fieldLength;
+  }
+	// In order, so the parts don't arrive shuffled
+	return embeds.reduce((previous, embed) => previous.then(() => channel.send({embeds: [embed]})), Promise.resolve())
+		.catch(console.error);
 }
+
+// Discord's limits on one embed: total characters of title, description, and fields, and number of fields
+const MAX_EMBED_LENGTH = 5800; // 6000, less some room for safety
+const MAX_EMBED_FIELDS = 25;
 
 /*var schedule = async function (guild, docID, sheetIndex) {
   var doc = new GoogleSpreadsheet(docID);
