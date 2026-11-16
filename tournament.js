@@ -1,4 +1,4 @@
-const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, PermissionsBitField, Colors, ChannelType, AuditLogEvent } = require('discord.js');
+const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, PermissionsBitField, Colors, ChannelType, AuditLogEvent, ActivityType } = require('discord.js');
 const fs = require('fs');
 const client = new Client({ intents: [GatewayIntentBits.Guilds,
 																			GatewayIntentBits.GuildMessages,
@@ -314,12 +314,12 @@ var remove = async function (role, from) {
 }
 
 var recolor = async function (role) {
-	await role.setColor(randomColor());
+	await role.setColors({ primaryColor: randomColor() });
 	return role.toString();
 }
 
 var recolorTo = async function (role, color) {
-	await role.setColor(color);
+	await role.setColors({ primaryColor: color });
 	return role.toString();
 }
 
@@ -425,7 +425,7 @@ var init = async function (guild) {
 	guild.roles.everyone.setPermissions(basePermissions);
   var controlRoomRole = await guild.roles.create({
 	  name: 'Control Room',
-	  color: Colors.Purple,
+	  colors: { primaryColor: Colors.Purple },
 	  hoist: true,
 	  permissions: PermissionFlagsBits.Administrator,
 	  mentionable: true,
@@ -433,7 +433,7 @@ var init = async function (guild) {
   });
   var staffRole = await guild.roles.create({
 	  name: 'Staff',
-	  color: Colors.Blue,
+	  colors: { primaryColor: Colors.Blue },
 	  hoist: true,
 		permissions: staffPermissions,
 	  mentionable: true,
@@ -441,14 +441,14 @@ var init = async function (guild) {
   });
   var spectatorRole = await guild.roles.create({
 	  name: 'Spectator',
-	  color: Colors.DarkGrey,
+	  colors: { primaryColor: Colors.DarkGrey },
 	  hoist: true,
 	  mentionable: true,
 	  position: 1
   });
   var coachRole = await guild.roles.create({
 	  name: 'Coach',
-	  color: 0x546E7A, // same as bottom right role color
+	  colors: { primaryColor: 0x546E7A }, // same as bottom right role color
 	  hoist: true,
 		permissions: coachPermissions,
 	  mentionable: true,
@@ -935,7 +935,7 @@ var createTeam = async function (guild, name) {
 	//console.log("Creating role " + name);
 	var teamRole = await guild.roles.create({
 		name: name,
-		color: color,
+		colors: { primaryColor: color },
 		hoist: true,
 		mentionable: true//,
 		//position: 1
@@ -1768,15 +1768,16 @@ client.on('raw', async function(raw) {
 
 client.login(config.BOT_TOKEN);
 
-client.once(Events.ClientReady, c => {
+client.once(Events.ClientReady, async c => {
   for(var [flake, guild] of client.guilds.cache) {
 		try {
-			console.log(guild.name + ' ' + guild.owner.user.tag);
+			const owner = await guild.fetchOwner();
+			console.log(guild.name + ' (owner: ' + owner.user.username + ')');
 		} catch (e) {
 			console.log(guild.name);
 		}
   }
-	c.user.setActivity('.help', {type: 'LISTENING'});
+	c.user.setActivity('.help', {type: ActivityType.Listening});
 	console.log(`Ready!  Logged in as ${c.user.tag}`);
 });
 
