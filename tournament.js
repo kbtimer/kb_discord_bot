@@ -574,6 +574,8 @@ const INIT_PROGRESS_INTERVAL_MS = 5000;
 // How many old channels init deletes at once. Each channel has its own rate limit, but Discord also caps
 // total requests per second, and may have limits it doesn't announce (see addTeamsToHub).
 const INIT_DELETE_CONCURRENCY = 5;
+// The roles init creates; the bot finds them by name, so there must be only one of each
+const INIT_ROLE_NAMES = ['Control Room', 'Staff', 'Spectator', 'Coach'];
 
 var init = async function (guild, commandChannel) {
   // basic setup of the tournament server
@@ -593,13 +595,29 @@ var init = async function (guild, commandChannel) {
 		}
 	};
 
-  await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
-
 	// empty out existing roles so the correct ones can take their place.
 	// Managed roles (bots, Server Booster) can't be deleted, so don't try.
 	var keptRoleNames = ['CKB Bot', 'ckbbot', 'Server Booster', 'Test CKB Bot Local'];
 	var rolesToDelete = [...guild.roles.cache.values()].filter(role =>
 		role.id !== guild.id && !role.managed && !keptRoleNames.includes(role.name));
+
+	// Check before deleting anything. Without Administrator the bot can't create the Control Room role, so it would
+	// wipe the server and then fail. A role above the bot's can't be deleted, and init would then create a second
+	// role with the same name; the bot finds roles by name, so it could pick the old one.
+	var me = guild.members.me ?? await guild.members.fetchMe();
+	if (!me.permissions.has(PermissionFlagsBits.Administrator)) {
+		await say('Cannot initialize: the ' + me.roles.highest.name + ' role needs the Administrator permission. Nothing was deleted.');
+		return;
+	}
+	var blockingRoles = rolesToDelete.filter(role => !role.editable);
+	if (blockingRoles.length > 0) {
+		await say('Cannot initialize: these roles are above the ' + me.roles.highest.name + ' role, so the bot cannot delete them: ' +
+			listNamesForMessage(blockingRoles.map(role => describeRole(role)), 'roles') + '. Drag the bot\'s role to the top of the role list ' +
+			'in Server Settings, or delete those roles, then run `.i` again. Nothing was deleted.');
+		return;
+	}
+
+  await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
 	var channelsToDelete = [...guild.channels.cache.values()];
 	channelsToDelete.sort((a, b) => (a.id === commandChannel?.id) - (b.id === commandChannel?.id));
 
@@ -656,6 +674,14 @@ var init = async function (guild, commandChannel) {
 	if (otherChannels.length < channelsToDelete.length) {
 		await say(deleteProgress() + '. Deleting this channel now; the result will be posted in the new #bot-commands.');
 		await deleteChannel(commandChannel);
+	}
+	// Backstop for a delete that failed anyway: don't create a second role the bot would confuse with the first
+	var survivingRoles = INIT_ROLE_NAMES.filter(name => guild.roles.cache.some(role => role.name === name));
+	if (survivingRoles.length > 0) {
+		var error = new Error('Init roles survived deletion: ' + survivingRoles.join(', '));
+		error.userMessage = 'These old roles could not be deleted: ' + listNamesForMessage(survivingRoles.map(name => '"' + name + '"'), 'roles') +
+			'. The bot finds roles by name, so it stopped before creating duplicates. Delete them by hand, then create a channel and run `.i` again.';
+		throw error;
 	}
 	await say('Building the tournament roles and channels . . .');
 	const basePermissions = [PermissionFlagsBits.ChangeNickname,
@@ -1686,7 +1712,7 @@ var processCommand = async function (command, message) {
 					return init(guild, message.channel).catch(function (e) {
 						console.error(e);
 						var report = 'Initialization of ' + guild.name + ' failed partway through. ' +
-							(rateLimitMessage(e) ?? 'Check the bot console for details.');
+							(e.userMessage ?? rateLimitMessage(e) ?? 'Check the bot console for details.');
 						// init may have deleted the channel the command came from
 						var reportChannel = guild.channels.cache.has(message.channel.id) ? message.channel :
 								guild.channels.cache.find(channel => channel.name === 'bot-commands');
