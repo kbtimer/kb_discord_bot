@@ -90,6 +90,10 @@ var helpSections = {
 		name: 'Open Lounge',
 		value: 'This command can only be run by users with the Control Room Role.  It adds permissions to post in hub, thus unlocking the lounge.\nExample bot-style usage: `.o`\nExample NL-style usage: `.open-lounge`'
 	},
+	'v': {
+		name: 'Verify Rooms and Permissions',
+		value: 'Control Room only. Lists the teams in each room and reports permission problems. Changes nothing. Tag a room to check only it.\nExample: `.v` or `.verify #room-1-text`'
+	},
   'h': {
 		name: 'Display This Help',
 		value: 'Example bot-style usage: `.h`\nExample NL-style usage: `.help`'
@@ -883,7 +887,7 @@ var init = async function (guild, commandChannel) {
 
 var help = function (channel, sections) {
 	//console.log("In help function");
-  sections = sections || ['i', 'g', 'u', 'c', 'd', 'b', 'n', 'a', 'r', 't', 'e', 'p', 'w', 'l', 'o', 'h'];
+  sections = sections || ['i', 'g', 'u', 'c', 'd', 'b', 'n', 'a', 'r', 't', 'e', 'p', 'w', 'l', 'o', 'v', 'h'];
   var helpMessage = {
 		color: 0x29bb9c, // same as discord aqua
 		title: 'CKB Bot Help',
@@ -1435,6 +1439,270 @@ var confirm = async function (message, prompt, force, failCallback, successCallb
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// .v: a read-only check of rooms, teams, and permissions. It changes nothing.
+
+// The overwrites as one sorted string, so two lists can be compared regardless of order
+var overwriteKeys = function (overwrites) {
+	return overwrites.map(overwrite => overwrite.id + ':' + overwrite.type + ':' +
+		new PermissionsBitField(overwrite.allow ?? 0n).bitfield + ':' + new PermissionsBitField(overwrite.deny ?? 0n).bitfield)
+		.sort().join('|');
+}
+
+// True if the channel has exactly the overwrites syncCategoryChannels, createRoom, and empty give it:
+// the category's list, with voice chat denied on a voice channel
+var matchesCategory = function (channel, categoryOverwrites) {
+	var expected = channel.type === ChannelType.GuildVoice ? categoryOverwrites.map(withVoiceChatDenied) : categoryOverwrites;
+	return overwriteKeys([...channel.permissionOverwrites.cache.values()]) === overwriteKeys(expected);
+}
+
+var allowsView = function (channel, id) {
+	return channel.permissionOverwrites.cache.get(id)?.allow.has(PermissionFlagsBits.ViewChannel) ?? false;
+}
+
+var deniesView = function (channel, id) {
+	return channel.permissionOverwrites.cache.get(id)?.deny.has(PermissionFlagsBits.ViewChannel) ?? false;
+}
+
+// True if some overwrite on a voice channel leaves its built-in text chat usable (see withVoiceChatDenied)
+var voiceChatOpen = function (channel) {
+	return [...channel.permissionOverwrites.cache.values()].some(overwrite =>
+		overwrite.allow.any(VOICE_CHAT_PERMISSIONS) || !overwrite.deny.has(VOICE_CHAT_PERMISSIONS));
+}
+
+var byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
+
+// Reads the server's current roles and channels (two API calls) and returns
+// { rooms: [{category, teams}], unassigned: [team roles in no room], loungeState, problems: [{text, roomIds}] }.
+// roomIds lists the competition rooms a problem concerns, so `.v #room` can show just that room's problems.
+var verifyServer = async function (guild) {
+	await guild.roles.fetch();
+	await guild.channels.fetch();
+	var everyoneId = guild.roles.everyone.id;
+	var problems = [];
+	var problem = function (text, rooms = []) {
+		problems.push({ text: text, roomIds: rooms.map(room => room.id) });
+	};
+	// Channels whose overwrites were checked against their category, so the voice chat check below skips them
+	var checked = new Set();
+	var checkSynced = function (category, channels, label, fix, rooms = []) {
+		var overwrites = [...category.permissionOverwrites.cache.values()];
+		var drifted = channels.filter(channel => !matchesCategory(channel, overwrites));
+		channels.forEach(channel => checked.add(channel.id));
+		if (drifted.length > 0) {
+			problem(listNames(drifted.map(channel => '#' + channel.name)) + (drifted.length === 1 ? ' doesn\'t' : ' don\'t') +
+				' match the permissions of ' + label + '. ' + fix, rooms);
+		}
+	};
+
+	// Roles the bot finds by name
+	for (var name of RESERVED_ROLE_NAMES.filter(name => name !== '@everyone')) {
+		var count = guild.roles.cache.filter(role => role.name === name).size;
+		if (count === 0) {
+			problem('The "' + name + '" role is missing. The bot finds roles by name, so a renamed role counts as missing.');
+		} else if (count > 1) {
+			problem('There are ' + count + ' roles named "' + name + '". The bot finds roles by name, so there should be one.');
+		}
+	}
+	var coachPos = await coachPosition(guild);
+	var teams = coachPos < 0 ? [] : [...guild.roles.cache.values()].filter(role => isTeamRole(role, coachPos)).sort(byName);
+	var teamIds = new Set(teams.map(team => team.id));
+
+	var categories = [...guild.channels.cache.values()].filter(channel => channel.type === ChannelType.GuildCategory)
+		.sort((a, b) => a.rawPosition - b.rawPosition);
+	var loungeCategories = new Map(categories.filter(category => /lounge/i.test(category.name))
+		.map(category => [category.name.trim().toLowerCase(), category]));
+
+	// A team role dragged above Coach stops counting as a team
+	for (var role of guild.roles.cache.values()) {
+		if (coachPos >= 0 && role.position > coachPos && !role.managed && !RESERVED_ROLE_NAMES.includes(role.name) &&
+				loungeCategories.has(role.name.toLowerCase() + ' lounge')) {
+			problem('The "' + role.name + '" role is above Coach, so the bot doesn\'t treat it as a team. Drag it below Coach.');
+		}
+	}
+
+	if (!categories.some(category => category.name === 'Control Room')) {
+		problem('The "Control Room" category is missing.');
+	}
+	var generalChannel = guild.channels.cache.find(channel => channel.name === 'general');
+	var hub = generalChannel?.parent?.name === 'Hub' ? generalChannel.parent : null;
+	if (!hub) {
+		problem('#general is missing or isn\'t in the "Hub" category. The bot finds the Hub through #general, so `.n`, `.l`, and `.o` won\'t work.');
+	}
+
+	// Competition rooms
+	var rooms = categories.filter(isCompetitionRoom).map(category => ({ category: category, teams: [] }));
+	var roomsOfTeam = new Map(teams.map(team => [team.id, []]));
+	for (var room of rooms) {
+		var category = room.category;
+		var label = 'room "' + category.name + '"';
+		if (!deniesView(category, everyoneId)) {
+			problem('Everyone can see ' + label + '.', [category]);
+		}
+		for (var name of ['Staff', 'Spectator']) {
+			var keptRole = guild.roles.cache.find(role => role.name === name);
+			if (keptRole && !allowsView(category, keptRole.id)) {
+				problem('The ' + name + ' role can\'t see ' + label + '.', [category]);
+			}
+		}
+		for (var overwrite of category.permissionOverwrites.cache.values()) {
+			if (overwrite.type === OverwriteType.Member) {
+				var member = guild.members.cache.get(overwrite.id);
+				problem(label[0].toUpperCase() + label.slice(1) + ' has permissions set for one person, ' +
+					(member ? member.displayName : 'user ID ' + overwrite.id) + ' (`.e` would remove them).', [category]);
+				continue;
+			}
+			var role = guild.roles.cache.get(overwrite.id);
+			if (!role) {
+				continue; // a deleted role's leftover entry does nothing, and .e clears it
+			}
+			if (teamIds.has(role.id)) {
+				if (overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
+					room.teams.push(role);
+					roomsOfTeam.get(role.id).push(category);
+				} else {
+					problem(label[0].toUpperCase() + label.slice(1) + ' has an entry for team ' + role.name + ' that doesn\'t let it see the room.', [category]);
+				}
+			} else if (!ROOM_KEPT_ROLE_NAMES.includes(role.name)) {
+				problem(label[0].toUpperCase() + label.slice(1) + ' has permissions for the "' + role.name + '" role, which isn\'t a team (`.e` would remove them).', [category]);
+			}
+		}
+		room.teams.sort(byName);
+		checkSynced(category, [...category.children.cache.values()], label,
+			'To fix it, `.a` a team that\'s already in the room, or `.e` the room if it should be empty.', [category]);
+	}
+
+	// Teams
+	for (var team of teams) {
+		var inRooms = roomsOfTeam.get(team.id);
+		if (inRooms.length > 1) {
+			problem('Team ' + team.name + ' is in ' + inRooms.length + ' rooms: ' + listNames(inRooms.map(category => '"' + category.name + '"')) + '.', inRooms);
+		}
+		var lounge = loungeCategories.get(team.name.toLowerCase() + ' lounge');
+		if (!lounge) {
+			problem('Team ' + team.name + ' has no "' + team.name + ' Lounge".');
+		} else if (!allowsView(lounge, team.id)) {
+			problem('Team ' + team.name + ' can\'t see its lounge.');
+		}
+		if (hub && !allowsView(hub, team.id)) {
+			problem('Team ' + team.name + ' can\'t see the Hub.' + (lounge ? ' Run `.n "' + team.name + '"` to give it access.' : ''));
+		}
+	}
+
+	// Team lounges
+	var teamNames = new Set(teams.map(team => team.name.toLowerCase()));
+	for (var [loungeName, lounge] of loungeCategories) {
+		if (loungeName === 'coaches lounge' || loungeName === 'lockdown lounge') {
+			continue;
+		}
+		var label = '"' + lounge.name + '"';
+		if (!teamNames.has(loungeName.replace(/ lounge$/, ''))) {
+			problem(label + ' has no team role with a matching name. Was the team renamed or deleted?');
+		}
+		if (!deniesView(lounge, everyoneId)) {
+			problem('Everyone can see ' + label + '.');
+		}
+		checkSynced(lounge, [...lounge.children.cache.values()], label, 'Fix it by hand in the channel\'s permissions.');
+	}
+
+	// Hub and lockdown. general and announcements have their own permissions on purpose (see syncHubChannels).
+	var lockdown = categories.find(category => category.name === 'Lockdown Lounge');
+	var hubLounges = hub ? [...hub.children.cache.values()].filter(channel => /lounge/.test(channel.name)) : [];
+	var lockedLounges = lockdown ? [...lockdown.children.cache.values()].filter(channel => /lounge/.test(channel.name)) : [];
+	var loungeState = lockedLounges.length > 0 ? 'locked down' : 'open';
+	if (hubLounges.length > 0 && lockedLounges.length > 0) {
+		loungeState = 'partly locked down';
+		problem('The lounge is partly locked down: ' + listNames(lockedLounges.map(channel => '#' + channel.name)) +
+			' ' + (lockedLounges.length === 1 ? 'is' : 'are') + ' in "Lockdown Lounge" but ' + listNames(hubLounges.map(channel => '#' + channel.name)) +
+			' ' + (hubLounges.length === 1 ? 'is' : 'are') + ' still in the Hub. Run `.l` or `.o` again.');
+	}
+	if (hub) {
+		checkSynced(hub, [...hub.children.cache.values()].filter(channel => channel.name !== 'general' && channel.name !== 'announcements'),
+			'the Hub', 'Running `.n` with the name of any existing team re-syncs the Hub.');
+	}
+	if (lockdown) {
+		if (!deniesView(lockdown, everyoneId)) {
+			problem('Everyone can see "Lockdown Lounge". Run `.l` again to fix it.');
+		}
+		checkSynced(lockdown, lockedLounges, '"Lockdown Lounge"', 'Run `.l` again to fix it.');
+	}
+
+	// Categories the bot doesn't recognize, e.g. a room that gained or lost a channel, which commands then refuse
+	for (var category of categories) {
+		if (!isCompetitionRoom(category) && !/lounge/i.test(category.name) && !RESERVED_CATEGORY_NAMES.includes(category.name.toLowerCase())) {
+			problem('"' + category.name + '" has ' + category.children.cache.size + ' channels. A room needs exactly a text and a voice channel, ' +
+				'so the bot can\'t manage this one and teams in it aren\'t counted here.');
+		}
+	}
+
+	// Every other voice channel (Control Room, Coaches Lounge, ...) must still have its built-in chat off
+	var openChat = [...guild.channels.cache.values()].filter(channel => channel.type === ChannelType.GuildVoice &&
+		!checked.has(channel.id) && voiceChatOpen(channel));
+	if (openChat.length > 0) {
+		problem('The built-in text chat is on in ' + listNames(openChat.map(channel => '#' + channel.name)) + '. Deny Send Messages, Add Reactions, and ' +
+			'Read Message History there for every role and person listed in the channel\'s permissions.');
+	}
+
+	return {
+		rooms: rooms,
+		unassigned: teams.filter(team => roomsOfTeam.get(team.id).length === 0),
+		teamCount: teams.length,
+		loungeState: loungeState,
+		problems: problems
+	};
+}
+
+// How many problems .v lists in Discord; the rest go to the bot console
+const MAX_VERIFY_PROBLEMS = 20;
+
+// The lines of the .v report: problems first, then the room board. With onlyRoom, just that room.
+var verifyReport = function (result, onlyRoom) {
+	var problems = onlyRoom ? result.problems.filter(p => p.roomIds.includes(onlyRoom.id)) : result.problems;
+	var rooms = onlyRoom ? result.rooms.filter(room => room.category.id === onlyRoom.id) : result.rooms;
+	var lines = [];
+	if (!onlyRoom) {
+		lines.push('**Checked** ' + result.rooms.length + ' room' + (result.rooms.length === 1 ? '' : 's') + ' and ' +
+			result.teamCount + ' team' + (result.teamCount === 1 ? '' : 's') + '. The lounge is ' + result.loungeState + '.');
+	}
+	if (problems.length === 0) {
+		lines.push('No problems found.');
+	} else {
+		lines.push('**' + problems.length + ' problem' + (problems.length === 1 ? '' : 's') + ':**');
+		problems.slice(0, MAX_VERIFY_PROBLEMS).forEach(p => lines.push('• ' + p.text));
+		if (problems.length > MAX_VERIFY_PROBLEMS) {
+			lines.push('. . . and ' + (problems.length - MAX_VERIFY_PROBLEMS) + ' more, listed in the bot console.');
+		}
+	}
+	if (!onlyRoom) {
+		lines.push('**Rooms:**');
+	}
+	for (var room of rooms) {
+		lines.push(room.category.name + ': ' + (room.teams.length > 0 ? room.teams.map(team => team.name).join(', ') : '(empty)'));
+	}
+	if (!onlyRoom && result.teamCount > 0) {
+		lines.push('**Not in a room:** ' + (result.unassigned.length > 0 ? result.unassigned.map(team => team.name).join(', ') : 'none'));
+	}
+	return lines;
+}
+
+// Sends lines in as few messages as fit under Discord's length limit
+var sendLines = async function (channel, lines) {
+	var chunk = '';
+	for (var line of lines) {
+		if (line.length > MAX_MESSAGE_LENGTH - 100) {
+			line = line.slice(0, MAX_MESSAGE_LENGTH - 105) + ' . . .';
+		}
+		if (chunk && chunk.length + 1 + line.length > MAX_MESSAGE_LENGTH - 100) {
+			await channel.send(chunk);
+			chunk = '';
+		}
+		chunk += (chunk ? '\n' : '') + line;
+	}
+	if (chunk) {
+		await channel.send(chunk);
+	}
+}
+
 // .w (secret code for the written) can be run by anyone, but only in a lounge
 // Each command's short name and its natural-language alias (see helpSections), mapped to the short name
 const COMMAND_NAMES = {
@@ -1452,9 +1720,10 @@ const COMMAND_NAMES = {
 	l: 'l', 'lockdown-lounge': 'l',
 	o: 'o', 'open-lounge': 'o',
 	w: 'w', 'written-code': 'w',
+	v: 'v', verify: 'v',
 	h: 'h', help: 'h',
-	// undocumented: z writes the member update log (bot owner only), k logs Hub permissions
-	z: 'z', k: 'k',
+	// undocumented: z writes the member update log (bot owner only)
+	z: 'z',
 };
 
 // Returns the short name of the command a line starts with, or null. The whole word must match, so `.done`
@@ -2368,12 +2637,25 @@ var processCommand = async function (command, message) {
 									help(message.channel, ['l', 'o']);
 								});
 							});
-		} else if (cmd === 'k' && hasRole(message.member, 'Control Room')) {
-			var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
-			var hubCategory = generalChannel.parent;
-			console.log("Hub: " + hubCategory);
-			const tempPermissions = generalChannel.parent.permissionOverwrites;
-			console.log(tempPermissions)
+		} else if (cmd === 'v' && hasRole(message.member, 'Control Room')) {
+			// Read-only, so no confirmation. It still runs in the server's command queue, so it never
+			// reads a room halfway through another command's changes.
+			var onlyRoom = mentions.channels.length > 0 ? mentions.channels[0]?.parent : null;
+			if (mentions.channels.length > 0 && !isCompetitionRoom(onlyRoom)) {
+				await message.channel.send((onlyRoom ? '"' + onlyRoom.name + '"' : 'That channel') + ' is not a competition room. ' +
+					'`.v #room-text` checks one room; `.v` alone checks the whole server.');
+			} else {
+				try {
+					var result = await verifyServer(message.guild);
+					if (result.problems.length > 0) {
+						console.log('.v found these problems on ' + message.guild.name + ':\n' + result.problems.map(p => '  ' + p.text).join('\n'));
+					}
+					await sendLines(message.channel, verifyReport(result, onlyRoom));
+				} catch (error) {
+					console.error('Could not verify the server:', error);
+					await message.channel.send('Could not finish checking the server. ' + (rateLimitMessage(error) ?? 'Check the bot console for details.'));
+				}
+			}
 		} else if (cmd === 'h') {
 			help(message.channel);
 		} else if (/^\.[a-z]/i.test(command) && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff'))) {
