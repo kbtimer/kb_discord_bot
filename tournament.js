@@ -1763,7 +1763,9 @@ var processCommand = async function (command, message) {
 				}, async function () {
 					// read the names first; they can't be looked up once the categories are gone
 					var roomNames = channels.map(text => '"' + text.parent.name + '"');
-					var failed = new Set();
+					// Indexes, not names: older servers can have two rooms with the same name
+					var failedIndexes = new Set();
+					var failedError = null;
 					if (channels.length > 1) {
 						await message.channel.send('Deleting ' + channels.length + ' rooms . . .');
 					}
@@ -1771,16 +1773,19 @@ var processCommand = async function (command, message) {
 					await Promise.all(channels.map(function (text, i) {
 						return deleteRoom(text).catch(function (error) {
 							console.error(error);
-							failed.add(roomNames[i]);
+							failedIndexes.add(i);
+							failedError = failedError ?? error;
 						}).finally(roomDone);
 					}));
-					var deleted = roomNames.filter(name => !failed.has(name));
+					var deleted = roomNames.filter((name, i) => !failedIndexes.has(i));
+					var failed = roomNames.filter((name, i) => failedIndexes.has(i));
 					if (deleted.length > 0) {
 						await message.channel.send((deleted.length === 1 ? 'Room ' : 'Rooms ') + listNamesForMessage(deleted, 'rooms') +
 							(deleted.length === 1 ? ' has' : ' have') + ' been deleted.');
 					}
 					if (failed.length > 0) {
-						await message.channel.send('Could not delete ' + listNamesForMessage([...failed], 'rooms') + '. Please delete them manually.');
+						await message.channel.send('Could not delete ' + listNamesForMessage(failed, 'rooms') + '. ' +
+							(rateLimitMessage(failedError) ?? 'Please delete them manually.'));
 						help(message.channel, ['d']);
 					}
 				});
