@@ -166,6 +166,14 @@ var syncRoom = async function (category) {
 	await disableVoiceChannelChatInCategory(category);
 }
 
+// The category a mentioned channel sits in, or null if its parent isn't a category. A thread's parent
+// is its text channel, so without this .a/.r/.t would edit that text channel's overwrites (skipping
+// the Control Room/Hub check, since the channel isn't named that) before syncRoom fails on it.
+var roomCategoryOf = function (channel) {
+	var parent = channel?.parent;
+	return parent && parent.type === ChannelType.GuildCategory ? parent : null;
+}
+
 // "A", "A and B", "A, B, and C"
 var listNames = function (items) {
 	var names = items.map(item => item.toString());
@@ -1161,12 +1169,15 @@ var lockdownLounge = async function(guild, message) {
 	var lockdownCategory = await guild.channels.cache.find(channel => channel.name === "Lockdown Lounge");
 	if(!lockdownCategory) {
 		lockdownCategory = await guild.channels.create({name: 'Lockdown Lounge',
-																										type: ChannelType.GuildCategory});
-		// await so the channels moved in below copy this deny, not an empty overwrite list
-		await lockdownCategory.permissionOverwrites.edit(guild.roles.everyone, {
-			ViewChannel: false
-		});
+																										type: ChannelType.GuildCategory,
+																										permissionOverwrites: [{id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel]}]});
 	}
+	// Set the deny on every run, not just at creation: a category left behind by an earlier failed .l (or
+	// edited by hand) may lack it, and the lounges moved in below copy its overwrites, so they'd be visible
+	// to everyone. Await it so a failure stops .l before any lounge moves.
+	await lockdownCategory.permissionOverwrites.edit(guild.roles.everyone, {
+		ViewChannel: false
+	});
 
 	//var pos = await coachPosition(guild);
 
@@ -1446,6 +1457,11 @@ var processCommand = async function (command, message) {
 		// The day count uses the host's local timezone, so the code rolls over at local midnight and can differ
 		// between hosts in different timezones. That's intended: codes are only ever checked by asking the bot
 		// in the team's lounge, never computed anywhere else, so only consistency within one host matters.
+		// Known and NOT a bug (please don't file it): this counts elapsed 24-hour periods since a January
+		// (standard-time) midnight, so during daylight saving time the code rolls over at 1 AM local instead
+		// of midnight. Nobody plays at 12:30 AM, and a code is only ever checked against the one the team
+		// generated in its own lounge (only needed if a team submits two writtens, which has never happened),
+		// so the exact rollover time doesn't matter. Don't "fix" it: changing the formula changes codes.
 		var date1 = new Date("01/01/2000");
 		var today = new Date();
 		var difference_in_time = today.getTime() - date1.getTime();
@@ -1491,7 +1507,11 @@ var processCommand = async function (command, message) {
 				if(channels.length == 0) {
 					throw 'No channel specified';
 				}
-				var to = channels[0].parent;
+				var to = roomCategoryOf(channels[0]);
+				if(!to) {
+					message.channel.send('Tag the text channel of a room, not a thread or a channel outside a category.');
+					throw 'Mentioned channel is not in a category';
+				}
 				if(to.name == "Control Room" || to.name == "Hub") {
 					message.channel.send('Cannot add or remove from "' + to.name + '"');
 					throw 'Cannot add or remove from "' + to.name + '"';
@@ -1564,7 +1584,11 @@ var processCommand = async function (command, message) {
 					message.channel.send('Tag at least one team and the text channel of the room to remove them from.');
 					throw 'Missing team or room for remove';
 				}
-				var from = channels[0].parent;
+				var from = roomCategoryOf(channels[0]);
+				if(!from) {
+					message.channel.send('Tag the text channel of a room, not a thread or a channel outside a category.');
+					throw 'Mentioned channel is not in a category';
+				}
 				if(from.name == "Control Room" || from.name == "Hub") {
 					message.channel.send('Cannot add or remove from "' + from.name + '"');
 					throw 'Cannot add or remove from "' + from.name + '"';
@@ -1611,8 +1635,12 @@ var processCommand = async function (command, message) {
 					message.channel.send('Tag at least one team, then the text channel of the room they are leaving, then the text channel of the room they are going to.');
 					throw 'Missing team or rooms for transfer';
 				}
-				var from = channels[0].parent;
-				var to = channels[1].parent;
+				var from = roomCategoryOf(channels[0]);
+				var to = roomCategoryOf(channels[1]);
+				if(!from || !to) {
+					message.channel.send('Tag the text channel of a room, not a thread or a channel outside a category.');
+					throw 'Mentioned channel is not in a category';
+				}
 				if(to.name == "Control Room" || to.name == "Hub") {
 					message.channel.send('Cannot add or remove from "' + to.name + '"');
 					throw 'Cannot add or remove from "' + to.name + '"';
