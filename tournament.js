@@ -395,25 +395,33 @@ var addTeamsToRoom = async function(roles, to, channel) {
 }
 
 // readHistory is true only for a team's own lounge; competition rooms hide earlier messages
+// The API doesn't pass category overwrite changes on to the channels, so always sync, even after a
+// failed edit: otherwise teams already changed in the category keep their old access to the channels.
 var add = async function (roles, to, readHistory = false) {
-	for (var role of roles) {
-		await to.permissionOverwrites.edit(role, {
-			ViewChannel: true,
-			SendMessages: true,
-			Connect: true,
-			AddReactions: true,
-			ReadMessageHistory: readHistory,
-			Speak: true
-		});
+	try {
+		for (var role of roles) {
+			await to.permissionOverwrites.edit(role, {
+				ViewChannel: true,
+				SendMessages: true,
+				Connect: true,
+				AddReactions: true,
+				ReadMessageHistory: readHistory,
+				Speak: true
+			});
+		}
+	} finally {
+		await syncRoom(to);
 	}
-	await syncRoom(to);
 }
 
 var remove = async function (roles, from) {
-	for (var role of roles) {
-		await from.permissionOverwrites.delete(role);
+	try {
+		for (var role of roles) {
+			await from.permissionOverwrites.delete(role);
+		}
+	} finally {
+		await syncRoom(from);
 	}
-	await syncRoom(from);
 }
 
 // Recolors each team with paint(role) and posts one summary
@@ -647,6 +655,9 @@ var init = async function (guild, commandChannel) {
 																			 PermissionFlagsBits.MuteMembers,
 																			 PermissionFlagsBits.ManageNicknames,
 																			 PermissionFlagsBits.MoveMembers]);
+	// Intentional, not a bug: coaches get the same moderation powers as staff (manage messages and
+	// nicknames, mute/move members, mention everyone). They are teachers and are expected to handle
+	// discipline for their students, so don't narrow this list.
 	const coachPermissions = staffPermissions;
 	await guild.roles.everyone.setPermissions(basePermissions);
   var controlRoomRole = await guild.roles.create({
@@ -1081,6 +1092,23 @@ var moveChannelAndSync = async function(destinationCategory, channel) {
 	return Promise.resolve("Success");
 }
 
+// Moves channels and waits for every move to finish, even when some fail, so a command doesn't
+// report done (and release the guild queue) while moves are still running. Throws afterwards
+// if any move failed.
+var moveChannelsAndSync = async function(destinationCategory, channels) {
+	var results = await Promise.allSettled(channels.map(channel => moveChannelAndSync(destinationCategory, channel)));
+	var failed = [];
+	results.forEach(function (result, i) {
+		if (result.status === 'rejected') {
+			console.error('Could not move ' + channels[i].name + ' to ' + destinationCategory.name + ':', result.reason);
+			failed.push(channels[i].name);
+		}
+	});
+	if (failed.length > 0) {
+		throw new Error('Could not move ' + listNames(failed) + ' to ' + destinationCategory.name);
+	}
+}
+
 var lockdownLounge = async function(guild, message) {
 	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
 	var hubCategory = generalChannel.parent;
@@ -1098,13 +1126,7 @@ var lockdownLounge = async function(guild, message) {
 
 
 	//Move all lounge channels to the lockdown lounge and sync permissions there
-	var promises = Array();
-	for(var [flake, channel] of hubCategory.children.cache) {
-		if(channel.name.match(/lounge/)) {
-			promises.push(moveChannelAndSync(lockdownCategory, channel));
-		}
-	}
-	await Promise.all(promises);
+	await moveChannelsAndSync(lockdownCategory, [...hubCategory.children.cache.values()].filter(channel => channel.name.match(/lounge/)));
 
 	//First modify hub, which changes all sync'd channels, which is just the lounge text
 	//{
@@ -1162,15 +1184,18 @@ var unlockLounge = async function(guild, message) {
 	//move all lounge channels back to hub
 	//then sync with hub and remodify voice chat permissions
 	message.channel.send("--Moving lounge channels back to Hub . . .");
-	var promises = Array();
-	for(var [flake, channel] of lockdownCategory.children.cache) {
-		if(channel.name.match(/lounge/)) {
-			promises.push(moveChannelAndSync(hubCategory, channel));
-		}
+	var moveError = null;
+	try {
+		await moveChannelsAndSync(hubCategory, [...lockdownCategory.children.cache.values()].filter(channel => channel.name.match(/lounge/)));
+	} catch (error) {
+		moveError = error;
 	}
-	await Promise.all(promises);
+	// Run even after a failed move: the channels that did reach Hub were synced and have voice chat on again
 	message.channel.send("--Removing voice channel chat permissions in hub . . .");
 	await disableVoiceChannelChatInCategory(hubCategory);
+	if (moveError) {
+		throw moveError;
+	}
 
 	// Only delete the category if it's empty; anything left in it would lose its category
 	if (lockdownCategory.children.cache.size === 0) {
