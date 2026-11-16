@@ -1,10 +1,17 @@
-const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, PermissionsBitField, Colors, ChannelType, AuditLogEvent, ActivityType } = require('discord.js');
+const { Client, Events, GatewayIntentBits, GuildDefaultMessageNotifications, PermissionFlagsBits, PermissionsBitField, OverwriteType, Colors, ChannelType, AuditLogEvent, ActivityType } = require('discord.js');
 const fs = require('fs');
+// Normally discord.js quietly waits out rate limits, which is right for the few-second waits that are
+// routine here. But some Discord limits last for days (servers get 250 new roles per 48 hours), and waiting
+// those out looks like a frozen bot. Anything longer than this fails instead, with a RateLimitError that
+// rateLimitMessage() turns into an explanation.
+const MAX_RATE_LIMIT_WAIT_MS = 60 * 1000;
+
 const client = new Client({ intents: [GatewayIntentBits.Guilds,
 																			GatewayIntentBits.GuildMessages,
 																			GatewayIntentBits.MessageContent,
 																			GatewayIntentBits.GuildMessageReactions,
-																			GatewayIntentBits.GuildMembers] });
+																			GatewayIntentBits.GuildMembers],
+														rest: { rejectOnRateLimit: data => data.timeToReset > MAX_RATE_LIMIT_WAIT_MS } });
 const config = require("./config.json");
 
 var helpSections = {
@@ -126,8 +133,10 @@ var lockPerms = async function (channel) {
 
 // Copies a room category's permissions to its channels, then turns voice-channel chat back off.
 var syncRoom = async function (category) {
+	// Re-fetch once for the whole category; see lockPerms for why
+	await category.fetch(true);
 	for(var [flake, channel] of category.children.cache) {
-		await lockPerms(channel);
+		await channel.lockPermissions();
 	}
 	await disableVoiceChannelChatInCategory(category);
 }
@@ -139,6 +148,55 @@ var listNames = function (items) {
 		return names.join(' and ');
 	}
 	return names.slice(0, -1).join(', ') + ', and ' + names[names.length - 1];
+}
+
+// "3 minutes", "47 hours"
+var describeDuration = function (ms) {
+	var minutes = Math.ceil(ms / 60000);
+	if (minutes < 120) {
+		return minutes + ' minute' + (minutes === 1 ? '' : 's');
+	}
+	return Math.round(minutes / 60) + ' hours';
+}
+
+// If error is a long Discord rate limit (see MAX_RATE_LIMIT_WAIT_MS), returns a sentence explaining it for
+// the channel; otherwise returns null.
+var rateLimitMessage = function (error) {
+	// discord.js names it "RateLimitError[<route>]"
+	if (!error || !String(error.name).startsWith('RateLimitError')) {
+		return null;
+	}
+	var wait = describeDuration(error.timeToReset);
+	if (error.method?.toUpperCase() === 'POST' && error.route === '/guilds/:id/roles') {
+		return 'Discord allows only ' + error.limit + ' new roles per server every 48 hours, and this server has used them up ' +
+			'(every team and every `.i` creates roles). New roles can be created again in about ' + wait + '.';
+	}
+	return 'Discord is rate-limiting the bot on ' + error.method?.toUpperCase() + ' ' + error.route + ' for about ' + wait + '. Please try again then.';
+}
+
+// Batch commands post one summary at the end instead of a message per item. Discord lets the bot post only
+// about 5 messages per 5 seconds in a channel, so per-item messages trailed the real work by many seconds.
+// Long batches post a start message and then this often report progress, so nobody thinks the bot froze.
+const PROGRESS_INTERVAL_MS = 10000;
+
+// Returns a function to call after each item finishes. It posts "<progressText(done)> . . ." at most
+// every PROGRESS_INTERVAL_MS, and never for the last item, since the summary follows right after.
+var progressReporter = function (channel, total, progressText) {
+	var done = 0;
+	var last = Date.now();
+	return function () {
+		done++;
+		if (done < total && Date.now() - last >= PROGRESS_INTERVAL_MS) {
+			last = Date.now();
+			channel.send(progressText(done) + ' . . .').catch(console.error);
+		}
+	};
+}
+
+// Like listNames, but falls back to a count so a summary stays under Discord's 2000-character limit
+var listNamesForMessage = function (items, noun) {
+	var names = listNames(items);
+	return names.length <= 1500 ? names : items.length + ' ' + noun;
 }
 
 const USERS_PATTERN = /<@!?(\d{17,19})>/;
@@ -221,54 +279,28 @@ var removeSendReactHistory = async function(overwrite) {
 	return Promise.resolve("Success");
 }
 
-var disableVoiceChannelChatInCategory = async function(category) {
-	var promises = Array();
+// The permissions that control a voice channel's built-in text chat
+const VOICE_CHAT_PERMISSIONS = [PermissionFlagsBits.SendMessages,
+																PermissionFlagsBits.AddReactions,
+																PermissionFlagsBits.ReadMessageHistory];
 
+// Returns a copy of an overwrite ({id, type, allow, deny}, or a PermissionOverwrites) with voice chat denied
+var withVoiceChatDenied = function(overwrite) {
+	return {
+		id: overwrite.id,
+		// without type, discord.js must look the id up in its cache, and throws for uncached users
+		type: overwrite.type,
+		allow: new PermissionsBitField(overwrite.allow ?? 0n).remove(VOICE_CHAT_PERMISSIONS),
+		deny: new PermissionsBitField(overwrite.deny ?? 0n).add(VOICE_CHAT_PERMISSIONS)
+	};
+}
+
+var disableVoiceChannelChatInCategory = async function(category) {
 	for(var [flake, channel] of category.children.cache) {
 		if (channel.type === ChannelType.GuildVoice) {
-			var overwrites = channel.permissionOverwrites.cache;
-			var newPerms = Array();
-			for(var [flake2, overwrite] of overwrites) {
-				var currPerms = {};
-				currPerms.id = overwrite.id;
-				var allow = overwrite.allow
-				var deny = overwrite.deny
-				allow = allow.remove([PermissionFlagsBits.SendMessages,
-															PermissionFlagsBits.AddReactions,
-															PermissionFlagsBits.ReadMessageHistory]);
-				deny = deny.add([PermissionFlagsBits.SendMessages,
-												 PermissionFlagsBits.AddReactions,
-												 PermissionFlagsBits.ReadMessageHistory]);
-				newPerms.push({
-					id: overwrite.id,
-					// without type, discord.js must look the id up in its cache, and throws for uncached users
-					type: overwrite.type,
-					allow: allow,
-					deny: deny
-				});
-				//await channel.permissionOverwrites.set([
-					//{
-						//id: overwrite.id,
-						//deny: [PermissionFlagsBits.SendMessages,
-									 //PermissionFlagsBits.AddReactions,
-									 //PermissionFlagsBits.ReadMessageHistory]
-					//}]);
-
-				//promises.push(removeSendReactHistory(overwrite));
-			}
-			await channel.permissionOverwrites.set(newPerms);
-			//var roles = category.guild.roles.cache;
-			//for(var [flake2, role] of roles) {
-				//console.log("  Removing access for " + role.name);
-				//channel.permissionOverwrites.edit(role, {
-					//SendMessages: false,
-					//AddReactions: false,
-					//ReadMessageHistory: false
-				//});
-			//}
+			await channel.permissionOverwrites.set([...channel.permissionOverwrites.cache.values()].map(withVoiceChatDenied));
 		}
 	}
-	await Promise.all(promises);
 }
 
 var syncVoiceChannelsToCategory = async function(category) {
@@ -284,9 +316,11 @@ var syncVoiceChannelsToCategory = async function(category) {
 // Copies the Hub category's permissions to its channels, then turns voice-channel chat back off.
 // general and announcements are skipped because they have their own @everyone permissions on purpose.
 var syncHubChannels = async function(hubCategory) {
+	// Re-fetch once for the whole category; see lockPerms for why
+	await hubCategory.fetch(true);
 	for(var [flake, channel] of hubCategory.children.cache) {
 		if (channel.name !== 'general' && channel.name !== 'announcements') {
-			await lockPerms(channel);
+			await channel.lockPermissions();
 		}
 	}
 	await disableVoiceChannelChatInCategory(hubCategory);
@@ -342,6 +376,24 @@ var remove = async function (roles, from) {
 	await syncRoom(from);
 }
 
+// Recolors each team with paint(role) and posts one summary
+var paintTeams = async function (channel, roles, paint) {
+	var failed = [];
+	await Promise.all(roles.map(role => paint(role).catch(function (error) {
+		console.error('Could not recolor ' + role.name + ':', error);
+		failed.push(role);
+	})));
+	var painted = roles.filter(role => !failed.includes(role));
+	if (painted.length > 0) {
+		await channel.send((painted.length === 1 ? 'Team ' : 'Teams ') + listNamesForMessage(painted.map(role => role.name), 'teams') +
+			(painted.length === 1 ? ' has' : ' have') + ' been given a new color.');
+	}
+	if (failed.length > 0) {
+		await channel.send('Could not recolor ' + listNamesForMessage(failed.map(role => role.name), 'teams') + '.');
+		help(channel, ['p']);
+	}
+}
+
 var recolor = async function (role) {
 	await role.setColors({ primaryColor: randomColor() });
 	return role.toString();
@@ -352,49 +404,49 @@ var recolorTo = async function (role, color) {
 	return role.toString();
 }
 
+// Roles that stay in a room when it's emptied; every other overwrite (teams, individual users) is removed
+const ROOM_KEPT_ROLE_NAMES = ['@everyone', 'Staff', 'Spectator', 'Coach'];
+
+// Removes every team from a room. The remaining overwrites are written to the category and both channels
+// at once (3 calls, in parallel) instead of deleting team overwrites one by one and then re-syncing.
 var empty = async function (room) {
 	// refresh first, so a team added moments ago (whose update event hasn't arrived yet) is still removed
 	await room.fetch(true);
-  var overwrites = room.permissionOverwrites.cache;
-  for (var [flake, overwrite] of overwrites) {
-		var role = await room.guild.roles.fetch(overwrite.id);
-		try {
-	    //	    console.log(role.name);
-	    if (role.name !== '@everyone' && role.name !== 'Staff' &&
-					role.name !== 'Spectator' && role.name !== 'Coach') {
-				await overwrite.delete();
-	    }
-		} catch (e) {
-	    // user overwrite, i guess
-	    //console.log(role);
-	    await overwrite.delete();
-		}
-  }
-	await syncRoom(room);
-  return;
+	var overwrites = [...room.permissionOverwrites.cache.values()].filter(function (overwrite) {
+		var role = overwrite.type === OverwriteType.Role ? room.guild.roles.cache.get(overwrite.id) : null;
+		return role && ROOM_KEPT_ROLE_NAMES.includes(role.name);
+	}).map(overwrite => ({ id: overwrite.id, type: overwrite.type, allow: overwrite.allow, deny: overwrite.deny }));
+	// The text channel gets exactly the category's overwrites, so it stays synced; the voice channel gets
+	// them with its built-in chat turned off (see disableVoiceChannelChatInCategory).
+	await Promise.all([room.permissionOverwrites.set(overwrites)].concat([...room.children.cache.values()].map(channel =>
+		channel.permissionOverwrites.set(channel.type === ChannelType.GuildVoice ? overwrites.map(withVoiceChatDenied) : overwrites))));
 }
 
-var createRoom = async function (guild, name, staffSpectatorInvisible) {
-  var category = await guild.channels.create({name: name, type: ChannelType.GuildCategory});
-  await category.permissionOverwrites.edit(guild.roles.everyone, {
-		ViewChannel: false
-  });
-  var staffRole = guild.roles.cache.find(r => r.name === 'Staff')
-	var spectatorRole = guild.roles.cache.find(r => r.name === 'Spectator')
+// Permissions for a competition room's category: hidden from everyone except Staff and Spectators.
+// Teams are added later with .a.
+var competitionRoomOverwrites = function (guild) {
+	var staffRole = guild.roles.cache.find(r => r.name === 'Staff');
+	var spectatorRole = guild.roles.cache.find(r => r.name === 'Spectator');
+	if (!staffRole || !spectatorRole) {
+		throw new Error('The Staff or Spectator role is missing');
+	}
+	return [
+		{ id: guild.roles.everyone.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+		{ id: staffRole.id, type: OverwriteType.Role, allow: [PermissionFlagsBits.ViewChannel] },
+		{ id: spectatorRole.id, type: OverwriteType.Role, allow: [PermissionFlagsBits.ViewChannel] }
+	];
+}
 
-  if (!staffSpectatorInvisible) {
-		await category.permissionOverwrites.edit(staffRole, {
-	    ViewChannel: true
-		});
-		await category.permissionOverwrites.edit(spectatorRole, {
-	    ViewChannel: true
-		});
-  }
+// Creates a category with <name>-text and <name>-voice, and returns the text channel.
+// The permissions are set as each channel is created rather than edited afterwards, which takes 3 API calls
+// instead of about 7. The text channel gets the category's overwrites, so it counts as synced; the voice
+// channel gets them with its built-in chat turned off (see disableVoiceChannelChatInCategory).
+var createRoom = async function (guild, name, overwrites = competitionRoomOverwrites(guild)) {
+  var category = await guild.channels.create({name: name, type: ChannelType.GuildCategory, permissionOverwrites: overwrites});
   var cleanName = name.replace(/\s+/g, '-').toLowerCase();
-  var text = await guild.channels.create({name: cleanName + '-text', parent: category});
-  var voice = await guild.channels.create({name: cleanName + '-voice', parent: category, type: ChannelType.GuildVoice});
-	// a new voice channel's built-in chat is open to anyone who can see the room until this runs
-	await disableVoiceChannelChatInCategory(category);
+  var text = await guild.channels.create({name: cleanName + '-text', parent: category, permissionOverwrites: overwrites});
+  await guild.channels.create({name: cleanName + '-voice', parent: category, type: ChannelType.GuildVoice,
+															 permissionOverwrites: overwrites.map(withVoiceChatDenied)});
   return text;
 }
 
@@ -410,6 +462,9 @@ var deleteRoom = async function (text) {
 
 // How often init posts "deleted X of Y" updates while it clears out the server
 const INIT_PROGRESS_INTERVAL_MS = 5000;
+// How many old channels init deletes at once. Each channel has its own rate limit, but Discord also caps
+// total requests per second, and may have limits it doesn't announce (see addTeamsToHub).
+const INIT_DELETE_CONCURRENCY = 5;
 
 var init = async function (guild, commandChannel) {
   // basic setup of the tournament server
@@ -443,28 +498,34 @@ var init = async function (guild, commandChannel) {
 						' channels, then building the tournament layout. On a big server this can take several minutes; ' +
 						'progress will be posted here until this channel is deleted.');
 
+	// Roles and channels are deleted at the same time, since they don't depend on each other.
+	// Role deletes share one rate limit for the whole server, so they go one at a time. Each channel has
+	// its own rate limit, so several channels are deleted at once. The command channel goes last, so
+	// progress can be posted there until the end.
 	var rolesDeleted = 0;
 	var rolesFailed = 0;
-	for (var role of rolesToDelete) {
-    try {
-			await role.delete();
-			rolesDeleted++;
-    } catch (e) {
-			rolesFailed++;
-			console.error('could not delete role: ' + role.name);
-			console.error(e);
-    }
-		await progress('Deleted ' + rolesDeleted + ' of ' + rolesToDelete.length + ' roles . . .');
-  }
-	await say('Deleted ' + rolesDeleted + ' of ' + rolesToDelete.length + ' roles. Deleting channels . . .');
-
 	var channelsDeleted = 0;
 	var channelsFailed = 0;
-  for (var channel of channelsToDelete) {
-		if (channel.id === commandChannel?.id) {
-			await say('Deleted ' + channelsDeleted + ' of ' + channelsToDelete.length + ' channels. Deleting this channel now; ' +
-								'the result will be posted in the new #bot-commands.');
+	var deleteProgress = function () {
+		return 'Deleted ' + rolesDeleted + ' of ' + rolesToDelete.length + ' roles and ' +
+			channelsDeleted + ' of ' + channelsToDelete.length + ' channels';
+	};
+
+	var deleteRoles = async function () {
+		for (var role of rolesToDelete) {
+			try {
+				await role.delete();
+				rolesDeleted++;
+			} catch (e) {
+				rolesFailed++;
+				console.error('could not delete role: ' + role.name);
+				console.error(e);
+			}
+			await progress(deleteProgress() + ' . . .');
 		}
+	};
+
+	var deleteChannel = async function (channel) {
 		// Some channels can't be deleted (e.g. a Community server's rules/updates channels);
 		// skip them instead of aborting init with the roles already gone.
 		try {
@@ -475,8 +536,18 @@ var init = async function (guild, commandChannel) {
 			console.error('could not delete channel: ' + channel.name);
 			console.error(e);
 		}
-		await progress('Deleted ' + channelsDeleted + ' of ' + channelsToDelete.length + ' channels . . .');
-  }
+		await progress(deleteProgress() + ' . . .');
+	};
+
+	var otherChannels = channelsToDelete.filter(channel => channel.id !== commandChannel?.id);
+	await Promise.all([
+		deleteRoles(),
+		runWithConcurrency(otherChannels, INIT_DELETE_CONCURRENCY, deleteChannel)
+	]);
+	if (otherChannels.length < channelsToDelete.length) {
+		await say(deleteProgress() + '. Deleting this channel now; the result will be posted in the new #bot-commands.');
+		await deleteChannel(commandChannel);
+	}
 	await say('Building the tournament roles and channels . . .');
 	const basePermissions = [PermissionFlagsBits.ChangeNickname,
 													 PermissionFlagsBits.ViewChannel,
@@ -848,16 +919,33 @@ var randomColor = function() {
 	return color;
 }
 
-var addToHub = async function(guild, role) {
-	var generalChannel = await guild.channels.cache.find(channel => channel.name === "general");
-	await generalChannel.parent.permissionOverwrites.edit(role, {
-		ViewChannel: true,
-		SendMessages: true,
-		Connect: true,
-		AddReactions: true,
-		ReadMessageHistory: true,
-		Speak: true
-	});
+// Gives team roles access to the Hub category, in one API call however many teams there are.
+// Editing one channel's overwrites a role at a time runs into a Discord limit that discord.js can't
+// see coming (42 teams got six 429s and about 24 seconds of waiting), so this rewrites the whole list.
+// Follow with syncHubChannels so the Hub's channels pick up the change.
+var addTeamsToHub = async function(guild, roles) {
+	if (roles.length === 0) {
+		return;
+	}
+	var generalChannel = guild.channels.cache.find(channel => channel.name === "general");
+	var hubCategory = generalChannel.parent;
+	// The cache can be stale (see lockPerms), and set() replaces everything, so start from Discord's copy
+	await hubCategory.fetch(true);
+	var roleIds = new Set(roles.map(role => role.id));
+	var overwrites = [...hubCategory.permissionOverwrites.cache.values()]
+		.filter(overwrite => !roleIds.has(overwrite.id))
+		.map(overwrite => ({ id: overwrite.id, type: overwrite.type, allow: overwrite.allow, deny: overwrite.deny }));
+	for (var role of roles) {
+		overwrites.push({ id: role.id, type: OverwriteType.Role, allow: [
+			PermissionFlagsBits.ViewChannel,
+			PermissionFlagsBits.SendMessages,
+			PermissionFlagsBits.Connect,
+			PermissionFlagsBits.AddReactions,
+			PermissionFlagsBits.ReadMessageHistory,
+			PermissionFlagsBits.Speak
+		] });
+	}
+	await hubCategory.permissionOverwrites.set(overwrites);
 
 	//Announcements isn't synced with the hub category, so we need to add visibility
 	//announcementsChannel.updateOverwrite(role);
@@ -1026,36 +1114,56 @@ var unlockLounge = async function(guild, message) {
 	//await lockPerms(hallwayChannel);
 }
 
+// Creates a team role and its private lounge, and returns the role.
+// The caller must then give the new roles Hub access with addTeamsToHub, and run syncHubChannels.
 var createTeam = async function (guild, name) {
-	var color = randomColor();
-	//console.log("Creating role " + name);
 	var teamRole = await guild.roles.create({
 		name: name,
-		colors: { primaryColor: color },
+		colors: { primaryColor: randomColor() },
 		hoist: true,
-		mentionable: true//,
-		//position: 1
+		mentionable: true
 	});
-	//console.log("Created role " + name);
-	//console.log("Creating lounge " + name + " Lounge");
-	var loungeText = await createRoom(guild, name + ' Lounge', true);
-	//console.log("Created lounge " + name + " Lounge");
-	//console.log("Adding role " + name + " to lounge " + loungeText.name);
-	// Teams can read their own lounge's history. This has to be set inside add(), before it copies
-	// the category's permissions to the channels; changing the category afterwards wouldn't reach them.
-	await add([teamRole], loungeText.parent, true);
-	//console.log("Adding " + name + " to hub");
-	await addToHub(guild, teamRole);
-	//console.log("Added " + name + " to hub");
+	// Same permissions .a gives a team, except that teams can read their own lounge's history
+	await createRoom(guild, name + ' Lounge', [
+		{ id: guild.roles.everyone.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+		{ id: teamRole.id, type: OverwriteType.Role, allow: [
+			PermissionFlagsBits.ViewChannel,
+			PermissionFlagsBits.SendMessages,
+			PermissionFlagsBits.Connect,
+			PermissionFlagsBits.AddReactions,
+			PermissionFlagsBits.ReadMessageHistory,
+			PermissionFlagsBits.Speak
+		] }
+	]);
+	return teamRole;
+}
 
-	return name;
+// How many teams .n builds at once. Discord handles one channel creation at a time per server anyway, so
+// more than a few just lines up more requests behind the same queue.
+const TEAM_CREATION_CONCURRENCY = 4;
+
+// Runs worker(item) for every item, at most `limit` at a time, starting them in order.
+var runWithConcurrency = async function (items, limit, worker) {
+	var next = 0;
+	var runners = [];
+	for (var r = 0; r < Math.min(limit, items.length); r++) {
+		runners.push((async function () {
+			while (next < items.length) {
+				var item = items[next++];
+				await worker(item);
+			}
+		})());
+	}
+	await Promise.all(runners);
 }
 
 var massCreateTeams = async function (guild, prefix, startIndex, endIndex) {
+	var roles = [];
   for (var i = startIndex; i <= endIndex; i++) {
 		var name = prefix + String(i);
-		await createTeam(guild, name);
+		roles.push(await createTeam(guild, name));
   }
+	await addTeamsToHub(guild, roles);
 	//sync all voice channels with category, then
 	// disable the chat channel in the voice channels
 	//I don't see a better way to do this.  I wish
@@ -1083,7 +1191,7 @@ var runConfirmCallback = async function (message, callback) {
 		await callback();
 	} catch (e) {
 		console.error(e);
-		message.channel.send('Something went wrong while running that command; check the bot console for details.').catch(console.error);
+		message.channel.send(rateLimitMessage(e) ?? 'Something went wrong while running that command; check the bot console for details.').catch(console.error);
 	}
 }
 
@@ -1207,18 +1315,11 @@ var processCommand = async function (command, message) {
 				await confirm(message, 'Are you sure you want to add team(s) ' + roleNames + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The addition is cancelled.');
 				}, async function () {
-					var promises = Array();
-					for(var i=0; i<roles.length; i++) {
-						var currRole = roles[i];
-						try {
-							promises.push(addTeamToRoom(currRole, to, message.channel));
-						} catch (e) {
-							console.error(e)
-							help(message.channel, ['a']);
-						}
-					}
-					await Promise.all(promises);
+					await Promise.all(roles.map(role => addTeamToRoom(role, to)));
 					await syncRoom(to);
+					// Names, not mentions: team roles are mentionable, so a mention would ping every member
+					await message.channel.send((roles.length === 1 ? 'Team ' : 'Teams ') + listNamesForMessage(roles.map(role => role.name), 'teams') +
+						(roles.length === 1 ? ' has' : ' have') + ' been added to room "' + to.name + '."');
 				});
 			} catch (e) {
 				console.error(e);
@@ -1329,23 +1430,25 @@ var processCommand = async function (command, message) {
 						throw 'too many channels in a category for empty';
 					}
 				}
-				var clearChannel = function (index) {
-					return empty(channels[index].parent).then(function () {
-						message.channel.send('Emptied room "' + channels[index].parent.name + '."');
-						if (index < channels.length - 1) {
-							return clearChannel(index + 1);
-						} else {
-							message.channel.send('All specified rooms emptied.');
-						}
-					}).catch(function (error) {
-						console.error(error);
-						message.channel.send('Could not empty room "' + channels[index].parent.name + '". Stopping; later rooms were not emptied.');
-					});
-				}
 				await confirm(message, 'Are you sure you want to empty the specified rooms? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. No rooms were emptied.');
-				}, function () {
-					return clearChannel(0);
+				}, async function () {
+					// Each room's permissions have their own rate limits, so all rooms are emptied at once.
+					// That takes a few seconds even for many rooms, so there's no start or progress message.
+					var rooms = [...new Map(channels.map(channel => [channel.parent.id, channel.parent])).values()];
+					var failed = [];
+					await Promise.all(rooms.map(room => empty(room).catch(function (error) {
+						console.error('Could not empty room ' + room.name + ':', error);
+						failed.push(room);
+					})));
+					var emptied = rooms.filter(room => !failed.includes(room)).map(room => '"' + room.name + '"');
+					if (failed.length === 0) {
+						await message.channel.send(rooms.length === 1 ? 'Emptied room ' + emptied[0] + '.' : 'Emptied all ' + rooms.length + ' rooms.');
+					} else {
+						await message.channel.send((emptied.length > 0 ? 'Emptied ' + listNamesForMessage(emptied, 'rooms') + ', but c' : 'C') +
+							'ould not empty ' + listNamesForMessage(failed.map(room => '"' + room.name + '"'), 'rooms') +
+							'. Check those rooms\' permissions, or try again.');
+					}
 				});
 			} catch (e) {
 				console.error(e);
@@ -1361,12 +1464,17 @@ var processCommand = async function (command, message) {
 					var guild = message.channel.guild;
 					return init(guild, message.channel).catch(function (e) {
 						console.error(e);
+						var report = 'Initialization of ' + guild.name + ' failed partway through. ' +
+							(rateLimitMessage(e) ?? 'Check the bot console for details.');
 						// init may have deleted the channel the command came from
 						var reportChannel = guild.channels.cache.has(message.channel.id) ? message.channel :
 								guild.channels.cache.find(channel => channel.name === 'bot-commands');
 						if (reportChannel) {
-							reportChannel.send('Initialization failed partway through; check the bot console for details.').catch(console.error);
+							reportChannel.send(report).catch(console.error);
 							help(reportChannel, ['i']);
+						} else {
+							// every channel may be gone, so tell the person who ran it directly
+							message.author.send(report).catch(console.error);
 						}
 					});
 				});
@@ -1448,19 +1556,35 @@ var processCommand = async function (command, message) {
 				}
 				await confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The creation is cancelled.');
-				}, function () {
-					var promises = [];
-					for (let i = 1; i < names.length; i += 2) {
-						let name = names[i];
-						promises.push(createRoom(message.channel.guild, name).then(function (textChannel) {
-							message.channel.send('Room "' + textChannel.parent.name + '" has been created.');
-						}).catch(function (error) {
-							console.error(error);
-							message.channel.send('Could not create room "' + name + '". Please try using a different name.');
-							help(message.channel, ['c']);
-						}));
+				}, async function () {
+					var roomNames = names.filter((n, idx) => idx % 2 === 1);
+					var failed = new Set();
+					var failReason = null;
+					if (roomNames.length > 1) {
+						await message.channel.send('Creating ' + roomNames.length + ' rooms. Each room takes about a second; progress will be posted every ' +
+							(PROGRESS_INTERVAL_MS / 1000) + ' seconds . . .');
 					}
-					return Promise.all(promises);
+					var roomDone = progressReporter(message.channel, roomNames.length, done => 'Created ' + done + ' of ' + roomNames.length + ' rooms');
+					// All at once: Discord creates a server's channels one at a time anyway, in the order requested
+					await Promise.all(roomNames.map(function (name) {
+						return createRoom(message.channel.guild, name).catch(function (error) {
+							console.error('Could not create room ' + name + ':', error.message ?? error);
+							failed.add(name);
+							failReason = failReason ?? rateLimitMessage(error);
+						}).finally(roomDone);
+					}));
+					var created = roomNames.filter(n => !failed.has(n));
+					if (created.length > 0) {
+						await message.channel.send((created.length === 1 ? 'Room ' : 'Rooms ') + listNamesForMessage(created.map(n => '"' + n + '"'), 'rooms') +
+							(created.length === 1 ? ' has' : ' have') + ' been created.');
+					}
+					if (failed.size > 0) {
+						await message.channel.send('Could not create ' + listNamesForMessage([...failed].map(n => '"' + n + '"'), 'rooms') + '. ' +
+							(failReason ?? 'Please try using different names.'));
+						if (!failReason) {
+							help(message.channel, ['c']);
+						}
+					}
 				});
 			} catch (e) {
 				console.error(e);
@@ -1527,27 +1651,13 @@ var processCommand = async function (command, message) {
 					await confirm(message, 'Are you sure you want to paint ' + roleNames + ' to be ' + newColor + '? Confirm by reacting with \:thumbsup:.', force, function() {
 						message.channel.send('No confirmation was received.  The painting is canceled.');
 					}, function () {
-						return Promise.all(roles.map(function (currRole) {
-							return recolorTo(currRole, newColor).then(function (teamName) {
-								message.channel.send('Team ' + teamName + ' has been given a new color.');
-							}).catch(function (error) {
-								console.error(error);
-								help(message.channel, ['p']);
-							});
-						}));
+						return paintTeams(message.channel, roles, currRole => recolorTo(currRole, newColor));
 					});
 				} else {
 					await confirm(message, 'Are you sure you want to paint ' + roleNames + ' a new color? Confirm by reacting with \:thumbsup:.', force, function () {
 						message.channel.send('No confirmation was received.  The painting is canceled.');
 					}, function () {
-						return Promise.all(roles.map(function (currRole) {
-							return recolor(currRole).then(function (teamName) {
-								message.channel.send('Team ' + teamName + ' has been given a new color.');
-							}).catch(function (error) {
-								console.error(error);
-								help(message.channel, ['p']);
-							});
-						}));
+						return paintTeams(message.channel, roles, currRole => recolor(currRole));
 					});
 				}
 			} catch (e) {
@@ -1572,16 +1682,29 @@ var processCommand = async function (command, message) {
 				}
 				await confirm(message, 'Are you sure you want to delete the specified room[s]? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The deletion is cancelled.');
-				}, function () {
-					return Promise.all(channels.map(function (text) {
-						return deleteRoom(text).then(function (name) {
-							message.channel.send('Room "' + name + '" has been deleted.');
-						}).catch(function (error) {
+				}, async function () {
+					// read the names first; they can't be looked up once the categories are gone
+					var roomNames = channels.map(text => '"' + text.parent.name + '"');
+					var failed = new Set();
+					if (channels.length > 1) {
+						await message.channel.send('Deleting ' + channels.length + ' rooms . . .');
+					}
+					var roomDone = progressReporter(message.channel, channels.length, done => 'Deleted ' + done + ' of ' + channels.length + ' rooms');
+					await Promise.all(channels.map(function (text, i) {
+						return deleteRoom(text).catch(function (error) {
 							console.error(error);
-							message.channel.send('Room "' + text + '" could not be deleted. Please delete it manually.')
-							help(message.channel, ['d']);
-						});
+							failed.add(roomNames[i]);
+						}).finally(roomDone);
 					}));
+					var deleted = roomNames.filter(name => !failed.has(name));
+					if (deleted.length > 0) {
+						await message.channel.send((deleted.length === 1 ? 'Room ' : 'Rooms ') + listNamesForMessage(deleted, 'rooms') +
+							(deleted.length === 1 ? ' has' : ' have') + ' been deleted.');
+					}
+					if (failed.length > 0) {
+						await message.channel.send('Could not delete ' + listNamesForMessage([...failed], 'rooms') + '. Please delete them manually.');
+						help(message.channel, ['d']);
+					}
 				});
 			} catch (e) {
 				console.error(e);
@@ -1669,28 +1792,46 @@ var processCommand = async function (command, message) {
 					message.channel.send('No confirmation was received. The new team creation is cancelled.');
 				}, async function () {
 					try {
-						for (var i = 1; i < names.length; i += 2) {
-							var name = names[i];
-							//if(!name.match(Exp)) {
-							//console.log("Something isn't right");//messsage.channel.send("Something isn't right");
-							//throw "Bad name.  Check your .n command";
-							//}
-							//console.log("Creating team " + name );
-							await createTeam(message.channel.guild, name).then(function (teamName) {
-								message.channel.send('Team "' + teamName + '" has been created.');
-							}).catch(function (error) {
-								console.error(error);
-								message.channel.send('Team "' + name + '" could not be created. Please try using a different name.');
+						var teamNames = names.filter((n, idx) => idx % 2 === 1);
+						var created = [];
+						var createdRoles = [];
+						var failed = [];
+						var failReason = null;
+						// Nothing else is posted until the teams are built, so say that work has started
+						await message.channel.send('Creating ' + teamNames.length + ' team' + (teamNames.length === 1 ? '' : 's') +
+							'. Each team takes about a second; progress will be posted every ' + (PROGRESS_INTERVAL_MS / 1000) + ' seconds . . .');
+						var teamDone = progressReporter(message.channel, teamNames.length, done => 'Created ' + done + ' of ' + teamNames.length + ' teams');
+						await runWithConcurrency(teamNames, TEAM_CREATION_CONCURRENCY, async function (name) {
+							try {
+								createdRoles.push(await createTeam(message.channel.guild, name));
+								created.push(name);
+							} catch (error) {
+								console.error('Could not create team ' + name + ':', error.message ?? error);
+								failed.push(name);
+								failReason = failReason ?? rateLimitMessage(error);
+							}
+							teamDone();
+						});
+						// Report in the order the teams were listed, not the order they finished
+						created = teamNames.filter(n => created.includes(n));
+						failed = teamNames.filter(n => failed.includes(n));
+						await message.channel.send('Created ' + created.length + ' of ' + teamNames.length + ' teams' +
+							(created.length > 0 ? ': ' + listNamesForMessage(created, 'teams') : '') + '.');
+						if (failed.length > 0) {
+							if (failReason) {
+								await message.channel.send('These teams could not be created: ' + listNamesForMessage(failed, 'teams') + '. ' + failReason);
+							} else {
+								await message.channel.send('These teams could not be created: ' + listNamesForMessage(failed, 'teams') + '. Please try using different names.');
 								help(message.channel, ['b', 'n']);
-							});
+							}
 						}
 						//sync all voice channels with category, then
 						// disable the chat channel in the voice channels
 						//I don't see a better way to do this.  I wish
 						// I could just disable voice channel chat.
 						message.channel.send("Adjusting permissions in hub ...");
+						await addTeamsToHub(message.channel.guild, createdRoles);
 						var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
-						message.channel.send("--Syncing hub channels to category");
 						await syncHubChannels(generalChannel.parent);
 						message.channel.send("Done");
 					} catch (e) {
@@ -1868,6 +2009,67 @@ var processCommand = async function (command, message) {
   return;
 };
 
+//////////////////////////////////////////////////////////////////////
+// Optional profiling of Discord API traffic. Turn it on with PROFILE=1 (e.g. `PROFILE=1 node tournament.js`).
+// After each command it logs the wall time, how many API calls it made (by route), how long discord.js
+// held requests back to stay under rate limits, and any 429s Discord returned anyway.
+// The counters are global, so two commands running at once (from different messages) mix their numbers.
+const PROFILE = process.env.PROFILE === '1';
+var profileStats = null;
+
+var resetProfileStats = function () {
+	profileStats = { calls: 0, byRoute: new Map(), waits: 0, waitMs: 0, maxWaitMs: 0, waitsByRoute: new Map(), got429: 0, retryAfterMs: 0 };
+}
+
+if (PROFILE) {
+	resetProfileStats();
+	client.rest.on('response', function (request, response) {
+		var key = request.method.toUpperCase() + ' ' + request.route;
+		profileStats.calls++;
+		profileStats.byRoute.set(key, (profileStats.byRoute.get(key) || 0) + 1);
+		if (response.status === 429) {
+			profileStats.got429++;
+			var retryAfter = Number(response.headers.get('retry-after')) * 1000 || 0;
+			profileStats.retryAfterMs += retryAfter;
+			console.log('[profile] 429 on ' + key + ', retry after ' + retryAfter + 'ms, scope ' + response.headers.get('x-ratelimit-scope'));
+		}
+	});
+	// Fired when discord.js waits *before* sending because it knows the bucket is empty
+	client.rest.on('rateLimited', function (info) {
+		var key = info.method.toUpperCase() + ' ' + info.route + (info.global ? ' (global)' : '');
+		profileStats.waits++;
+		profileStats.waitMs += info.timeToReset;
+		profileStats.maxWaitMs = Math.max(profileStats.maxWaitMs, info.timeToReset);
+		profileStats.waitsByRoute.set(key, (profileStats.waitsByRoute.get(key) || 0) + info.timeToReset);
+		// Logged as it happens, so a long wait doesn't look like a silent hang
+		if (info.timeToReset >= 2000) {
+			console.log('[profile] ' + new Date().toLocaleTimeString() + ' waiting ' + (info.timeToReset / 1000).toFixed(1) +
+				's on ' + key + ' (limit ' + info.limit + ', scope ' + info.scope + ')');
+		}
+	});
+	// discord.js's own notes on rate limits; skip its routine bucket-hash and cache-sweep messages
+	client.rest.on('restDebug', function (text) {
+		// \b so "429" inside a bucket hash like 2955783cf8922429... doesn't match
+		if (/\b429\b|rate limit/i.test(text)) {
+			console.log('[profile] ' + new Date().toLocaleTimeString() + ' ' + text);
+		}
+	});
+}
+
+var reportProfile = function (command, startMs) {
+	var s = profileStats;
+	var lines = ['[profile] "' + command.slice(0, 60) + '" took ' + ((Date.now() - startMs) / 1000).toFixed(1) + 's: ' +
+		s.calls + ' API calls, ' + s.waits + ' rate-limit waits totaling ' + (s.waitMs / 1000).toFixed(1) + 's (longest ' +
+		(s.maxWaitMs / 1000).toFixed(1) + 's), ' + s.got429 + ' 429s (' + (s.retryAfterMs / 1000).toFixed(1) + 's retry-after)'];
+	for (var [route, count] of [...s.byRoute].sort((a, b) => b[1] - a[1])) {
+		lines.push('[profile]   ' + String(count).padStart(4) + '  ' + route);
+	}
+	for (var [route, ms] of [...s.waitsByRoute].sort((a, b) => b[1] - a[1])) {
+		lines.push('[profile]   waited ' + (ms / 1000).toFixed(1) + 's on ' + route);
+	}
+	console.log(lines.join('\n'));
+}
+
 client.on('messageCreate', async function (message) {
 	// Ignore messages from bots (including this one) and anything outside a server
 	if (message.author.bot || !message.guild) {
@@ -1875,10 +2077,18 @@ client.on('messageCreate', async function (message) {
 	}
 	var content = message.content.split('\n');
 	for (var str of content) {
+		var startMs = Date.now();
+		if (PROFILE) {
+			resetProfileStats();
+		}
 		try {
 			await processCommand(str, message);
 		} catch (e) {
 			console.error('Error processing command "' + str + '":', e);
+		}
+		// Skip ordinary chat, which makes no API calls
+		if (PROFILE && profileStats.calls > 0) {
+			reportProfile(str, startMs);
 		}
 	}
   return;
