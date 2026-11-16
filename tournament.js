@@ -1484,10 +1484,36 @@ var deniesView = function (channel, id) {
 	return channel.permissionOverwrites.cache.get(id)?.deny.has(PermissionFlagsBits.ViewChannel) ?? false;
 }
 
-// True if some overwrite on a voice channel leaves its built-in text chat usable (see withVoiceChatDenied)
-var voiceChatOpen = function (channel) {
-	return [...channel.permissionOverwrites.cache.values()].some(overwrite =>
+// True if some overwrite on a voice channel leaves its built-in text chat usable (see withVoiceChatDenied).
+// With no @everyone overwrite, the server-wide @everyone permissions from .i (which include messaging) apply.
+var voiceChatOpen = function (channel, everyoneId) {
+	var overwrites = channel.permissionOverwrites.cache;
+	return !overwrites.has(everyoneId) || [...overwrites.values()].some(overwrite =>
 		overwrite.allow.any(VOICE_CHAT_PERMISSIONS) || !overwrite.deny.has(VOICE_CHAT_PERMISSIONS));
+}
+
+// What .a (addTeamToRoom) and createTeamLounge give a team. A team may read history only in its own lounge.
+const TEAM_PERMISSION_NAMES = new Map([
+	[PermissionFlagsBits.SendMessages, 'send messages'],
+	[PermissionFlagsBits.Connect, 'connect'],
+	[PermissionFlagsBits.Speak, 'speak'],
+	[PermissionFlagsBits.AddReactions, 'add reactions']
+]);
+
+// Describes how a team's overwrite falls short of what the bot gives it, or returns null if it doesn't.
+// Only the permissions the bot sets are checked, so a deliberate extra (say, Attach Files) isn't flagged.
+// A permission left unset falls back to @everyone's server permissions from .i, which allow all of these,
+// so only an explicit deny takes one away; but rooms must deny history, since unset means readable.
+var teamPermissionGaps = function (overwrite, readHistory) {
+	var missing = [...TEAM_PERMISSION_NAMES].filter(([bit]) => overwrite.deny.has(bit)).map(([, name]) => name);
+	var gaps = missing.length > 0 ? ['can\'t ' + (missing.length <= 2 ? missing.join(' or ') :
+		missing.slice(0, -1).join(', ') + ', or ' + missing[missing.length - 1])] : [];
+	if (readHistory && overwrite.deny.has(PermissionFlagsBits.ReadMessageHistory)) {
+		gaps.push('can\'t read earlier messages');
+	} else if (!readHistory && !overwrite.deny.has(PermissionFlagsBits.ReadMessageHistory)) {
+		gaps.push('can read earlier rounds\' messages');
+	}
+	return gaps.length > 0 ? gaps.join(' and ') : null;
 }
 
 var byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
@@ -1580,6 +1606,10 @@ var verifyServer = async function (guild) {
 				if (overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
 					room.teams.push(role);
 					roomsOfTeam.get(role.id).push(category);
+					var gaps = teamPermissionGaps(overwrite, false);
+					if (gaps) {
+						problem('In ' + label + ', team ' + role.name + ' ' + gaps + '. `.a` the team to the room again to fix it.', [category]);
+					}
 				} else {
 					problem(label[0].toUpperCase() + label.slice(1) + ' has an entry for team ' + role.name + ' that doesn\'t let it see the room.', [category]);
 				}
@@ -1610,17 +1640,39 @@ var verifyServer = async function (guild) {
 	}
 
 	// Team lounges
-	var teamNames = new Set(teams.map(team => team.name.toLowerCase()));
 	for (var [loungeName, lounge] of loungeCategories) {
 		if (loungeName === 'coaches lounge' || loungeName === 'lockdown lounge') {
 			continue;
 		}
 		var label = '"' + lounge.name + '"';
-		if (!teamNames.has(loungeName.replace(/ lounge$/, ''))) {
+		var owner = teams.find(team => team.name.toLowerCase() + ' lounge' === loungeName);
+		if (!owner) {
 			problem(label + ' has no team role with a matching name. Was the team renamed or deleted?');
 		}
 		if (!deniesView(lounge, everyoneId)) {
 			problem('Everyone can see ' + label + '.');
+		}
+		// A lounge is private: only @everyone (denied) and its own team belong in it (see createTeamLounge)
+		for (var overwrite of lounge.permissionOverwrites.cache.values()) {
+			if (overwrite.id === everyoneId) {
+				continue;
+			}
+			if (owner && overwrite.id === owner.id) {
+				var gaps = allowsView(lounge, owner.id) && teamPermissionGaps(overwrite, true);
+				if (gaps) {
+					problem('In ' + label + ', team ' + owner.name + ' ' + gaps + '. Fix it by hand in the category\'s permissions.');
+				}
+				continue;
+			}
+			var member = overwrite.type === OverwriteType.Member ? guild.members.cache.get(overwrite.id) : null;
+			var role = overwrite.type === OverwriteType.Role ? guild.roles.cache.get(overwrite.id) : null;
+			if (overwrite.type === OverwriteType.Role && !role) {
+				continue; // a deleted role's leftover entry does nothing
+			}
+			var who = role ? (teamIds.has(role.id) ? 'team ' + role.name : 'the "' + role.name + '" role') :
+				'one person, ' + (member ? member.displayName : 'user ID ' + overwrite.id);
+			var fix = role && teamIds.has(role.id) ? '`.r` the team from the lounge' : 'Remove it by hand in the category\'s permissions';
+			problem(label + ' is private to its team but has permissions set for ' + who + '. ' + fix + ' if it shouldn\'t be there.');
 		}
 		checkSynced(lounge, [...lounge.children.cache.values()], label, 'Fix it by hand in the channel\'s permissions.');
 	}
@@ -1657,7 +1709,14 @@ var verifyServer = async function (guild) {
 
 	// Every other voice channel (Control Room, Coaches Lounge, ...) must still have its built-in chat off
 	var openChat = [...guild.channels.cache.values()].filter(channel => channel.type === ChannelType.GuildVoice &&
-		!checked.has(channel.id) && voiceChatOpen(channel));
+		!checked.has(channel.id) && voiceChatOpen(channel, everyoneId));
+	var unrestricted = openChat.filter(channel => !channel.permissionOverwrites.cache.has(everyoneId));
+	if (unrestricted.length > 0) {
+		problem(listNames(unrestricted.map(channel => '#' + channel.name)) + (unrestricted.length === 1 ? ' has' : ' have') +
+			' no permissions set for @everyone, so everyone can see ' + (unrestricted.length === 1 ? 'it' : 'them') + ' and use the built-in text chat. ' +
+			'Deny @everyone View Channel (unless everyone should see it), Send Messages, Add Reactions, and Read Message History there.');
+	}
+	openChat = openChat.filter(channel => !unrestricted.includes(channel));
 	if (openChat.length > 0) {
 		problem('The built-in text chat is on in ' + listNames(openChat.map(channel => '#' + channel.name)) + '. Deny Send Messages, Add Reactions, and ' +
 			'Read Message History there for every role and person listed in the channel\'s permissions.');
