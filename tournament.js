@@ -1289,13 +1289,41 @@ var confirm = async function (message, prompt, force, failCallback, successCallb
 }
 
 // .w (secret code for the written) can be run by anyone, but only in a lounge
+// Each command's short name and its natural-language alias (see helpSections), mapped to the short name
+const COMMAND_NAMES = {
+	a: 'a', add: 'a',
+	r: 'r', remove: 'r',
+	t: 't', transfer: 't',
+	e: 'e', empty: 'e',
+	i: 'i', 'initialize-server': 'i',
+	c: 'c', create: 'c',
+	p: 'p', paint: 'p',
+	d: 'd', delete: 'd',
+	n: 'n', 'new-teams': 'n',
+	g: 'g', 'grant-control-room': 'g',
+	u: 'u', 'ungrant-control-room': 'u',
+	l: 'l', 'lockdown-lounge': 'l',
+	o: 'o', 'open-lounge': 'o',
+	w: 'w', 'written-code': 'w',
+	h: 'h', help: 'h',
+	// undocumented: z writes the member update log (bot owner only), k logs Hub permissions
+	z: 'z', k: 'k',
+};
+
+// Returns the short name of the command a line starts with, or null. The whole word must match, so `.done`
+// isn't `.d` and `.e.g.` isn't `.e`. Mentions and quotes can follow without a space (`.a<@&123>`).
+var commandName = function (line) {
+	var match = line.match(/^\.([a-z]+(?:-[a-z]+)*)(?![a-z0-9.\-])/i);
+	return match ? COMMAND_NAMES[match[1].toLowerCase()] ?? null : null;
+}
+
 var isWrittenCodeCommand = function (command, message) {
-	return command.indexOf('.w') === 0 && message.channel.name.indexOf("lounge") > -1;
+	return commandName(command) === 'w' && message.channel.name.indexOf("lounge") > -1;
 }
 
 // Every other command needs Control Room, Staff, or the server owner
 var isStaffCommand = function (command, message) {
-	return !isWrittenCodeCommand(command, message) && command.indexOf('.') === 0 &&
+	return !isWrittenCodeCommand(command, message) && /^\.[a-z]/i.test(command) &&
 		(hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.author.id === message.guild.ownerId);
 }
 
@@ -1353,8 +1381,9 @@ var processCommand = async function (command, message) {
 
 		//If we're here, we know that the caller is Control Room, Staff, or owner, so if all of those can
 		//  call a command, we don't have to bother checking roles
+		var cmd = commandName(command);
 		var mentions = await getMentions(command, message.guild);
-		if (command.indexOf('.a') === 0) {
+		if (cmd === 'a') {
 			try {
 				var roles = mentions.roles;
 				var channels = mentions.channels;
@@ -1426,7 +1455,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['a']);
 			}
-		} else if (command.indexOf('.r') === 0) {
+		} else if (cmd === 'r') {
 			try {
 				var roles = mentions.roles;
 				var channels = mentions.channels;
@@ -1473,7 +1502,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['r']);
 			}
-		} else if (command.indexOf('.t') === 0) {
+		} else if (cmd === 't') {
 			try {
 				var roles = mentions.roles;
 				var channels = mentions.channels;
@@ -1534,7 +1563,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['t']);
 			}
-		} else if (command.indexOf('.e') === 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'e' && hasRole(message.member, 'Control Room')) {
 			try {
 				var channels = mentions.channels;
 				if(channels.length == 0) {
@@ -1571,7 +1600,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['e']);
 			}
-		} else if (command.indexOf('.i') === 0 && message.author.id === message.guild.ownerId) {
+		} else if (cmd === 'i' && message.author.id === message.guild.ownerId) {
 			if(command.indexOf(message.channel.guild.name) < 0) {
 				help(message.channel, ['i']);
 			} else {
@@ -1596,7 +1625,7 @@ var processCommand = async function (command, message) {
 					});
 				});
 			}
-		} else if (command.indexOf('.z') === 0 && message.author.id === message.guild.ownerId && message.author.id === (await client.application.fetch()).owner?.id) {
+		} else if (cmd === 'z' && message.author.id === message.guild.ownerId && message.author.id === (await client.application.fetch()).owner?.id) {
 
 			message.channel.send('Writing member update log to server . . . ');
 			try {
@@ -1636,7 +1665,7 @@ var processCommand = async function (command, message) {
 				console.log(e)
 				message.channel.send('Failed to write member update log to server.');
 			}
-		} else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'c' && hasRole(message.member, 'Control Room')) {
 			try {
 				var content = command.substr(command.indexOf(' ') + 1).trim();
 				var names = content.split(/["“”]/g);
@@ -1718,7 +1747,7 @@ var processCommand = async function (command, message) {
 				help(message.channel, ['c']);
 			}
 			/*
-				} else if (command.indexOf('.c') === 0 && hasRole(message.member, 'Control Room')) {
+				} else if (cmd === 'c' && hasRole(message.member, 'Control Room')) {
 				// todo add the ability to create multiple rooms at once
 				try {
 				var name = command.substr(command.indexOf(' ') + 1).trim();
@@ -1743,7 +1772,7 @@ var processCommand = async function (command, message) {
 				help(message.channel, ['c']);
 				}
 			*/
-		} else if (command.indexOf('.p') === 0) {
+		} else if (cmd === 'p') {
 			try {
 				var roles = mentions.roles;
 				var pos = await coachPosition(message.guild);
@@ -1791,7 +1820,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['p']);
 			}
-		} else if (command.indexOf('.d') === 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'd' && hasRole(message.member, 'Control Room')) {
 			try {
 				var channels = mentions.channels;
 
@@ -1842,7 +1871,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['d']);
 			}
-			/*} else if (command.indexOf('.f') === 0 && hasRole(message.member, 'Control Room')) {
+			/*} else if (cmd === 'f' && hasRole(message.member, 'Control Room')) {
 				try {
 				var teams = mentions.roles;
 				confirm(message, 'Are you sure you want to create a finals room with teams ' + teams[0].toString() + ' and ' + teams[1].toString() + '? Confirm by reacting with \:thumbsup:.', force, function () {
@@ -1861,7 +1890,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['f']);
 				}
-				} else if (command.indexOf('.s') === 0 && hasRole(message.member, 'Control Room')) {
+				} else if (cmd === 's' && hasRole(message.member, 'Control Room')) {
 				try {
 				var content = command.split(/\s+/g);
 				var url = parseUrl(content[1]);
@@ -1885,7 +1914,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['s']);
 				}*/
-		} else if (command.indexOf('.n') === 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'n' && hasRole(message.member, 'Control Room')) {
 			try {
 				var content = command.substr(command.indexOf(' ') + 1).trim();
 				var names = content.split(/["“”]/g);
@@ -1983,7 +2012,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['b', 'n']);
 			}
-		/*} else if (command.indexOf('.m') === 0 && hasRole(message.member, 'Control Room')) {
+		/*} else if (cmd === 'm' && hasRole(message.member, 'Control Room')) {
 			try {
 				var range = command.split(/\s+/g)[1];
 				confirm(message, 'Are you sure you want to mass create teams from the range ' + range + '? Confirm by reacting with \:thumbsup:.', force, function () {
@@ -2006,7 +2035,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['b', 'n']);
 			}*/
-			/*} else if (command.indexOf('.b') === 0 && hasRole(message.member, 'Control Room')) {
+			/*} else if (cmd === 'b' && hasRole(message.member, 'Control Room')) {
 				var bitrate = NaN;
 				try {
 				var bitrate = Number(command.substring(command.indexOf(' ')));
@@ -2026,7 +2055,7 @@ var processCommand = async function (command, message) {
 				});
 				});
 				}*/
-		} else if (command.indexOf('.g') === 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'g' && hasRole(message.member, 'Control Room')) {
 			try {
 				let role = message.guild.roles.cache.find(r => r.name === 'Control Room');
 				var users = mentions.users;
@@ -2062,7 +2091,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['g', 'u']);
 			}
-		} else if (command.indexOf('.u') === 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'u' && hasRole(message.member, 'Control Room')) {
 			try {
 				let role = message.guild.roles.cache.find(r => r.name === 'Control Room');
 				var users = mentions.users;
@@ -2104,7 +2133,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['g','u']);
 			}
-		} else if (command.indexOf('.l') === 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'l' && hasRole(message.member, 'Control Room')) {
 			await confirm(message, 'Are you sure you want to lock down the lounge?  Confirm by reacting with \:thumbsup:.', force,
 							function () {
 								message.channel.send("No confirmation was received.  Locking the lounge canceled.");
@@ -2119,7 +2148,7 @@ var processCommand = async function (command, message) {
 									help(message.channel, ['l', 'o']);
 								});
 							});
-		} else if (command.indexOf('.o') === 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'o' && hasRole(message.member, 'Control Room')) {
 			await confirm(message, 'Are you sure you want to open the lounge?  Confirm by reacting with \:thumbsup:.', force,
 							function() {
 								message.channel.send('No confirmation received.  Unlocking the lounge canceled.');
@@ -2134,15 +2163,16 @@ var processCommand = async function (command, message) {
 									help(message.channel, ['l', 'o']);
 								});
 							});
-		} else if (command.indexOf('.k') == 0 && hasRole(message.member, 'Control Room')) {
+		} else if (cmd === 'k' && hasRole(message.member, 'Control Room')) {
 			var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
 			var hubCategory = generalChannel.parent;
 			console.log("Hub: " + hubCategory);
 			const tempPermissions = generalChannel.parent.permissionOverwrites;
 			console.log(tempPermissions)
-		} else if (command.indexOf('.h') === 0) {
+		} else if (cmd === 'h') {
 			help(message.channel);
-		} else if (command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff'))) {
+		} else if (/^\.[a-z]/i.test(command) && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff'))) {
+			// Unknown command, or one this person can't run. Lines like "..." aren't commands, so they get no reply.
 			message.channel.send('Use the `.help` command to get started!');
 		}
 	}
