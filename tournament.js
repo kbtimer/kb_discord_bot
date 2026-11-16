@@ -270,6 +270,21 @@ var getMentions = async function (content, guild) {
   return mentions;
 }
 
+// A team role sits below Coach. @everyone (whose ID is the server's ID) and roles managed by an integration
+// such as a bot can sit there too but aren't teams; removing @everyone's overwrite from a room would make the
+// room visible to the whole server. A mention of a deleted or unknown role resolves to null.
+var isTeamRole = function (role, coachPos) {
+	return !!role && role.id !== role.guild.id && !role.managed && role.position < coachPos;
+}
+
+// Names a role in a bot message without pinging anyone: "@everyone" in message text pings the whole server
+var describeRole = function (role) {
+	if (!role) {
+		return 'an unknown role';
+	}
+	return role.id === role.guild.id ? 'the everyone role' : '"' + role.name + '"';
+}
+
 var coachPosition = async function(guild) {
 	var coachRole = guild.roles.cache.find(r => r.name === 'Coach');
 	if(coachRole === undefined) {
@@ -1362,10 +1377,10 @@ var processCommand = async function (command, message) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
 					throw 'Coach role deleted';
 				}
-				for(var i=0; i<roles.length; i++) {
-					if(roles[i].position >= pos) {
-						message.channel.send('Cannot add with non-team role ' + roles[i].toString());
-						throw 'Cannot add with non-team role ' + roles[i].toString();
+				for(var role of roles) {
+					if(!isTeamRole(role, pos)) {
+						message.channel.send('Cannot add ' + describeRole(role) + ': it is not a team role.');
+						throw 'Cannot add with non-team role ' + describeRole(role);
 					}
 				}
 				var roleNames = "";
@@ -1423,9 +1438,9 @@ var processCommand = async function (command, message) {
 					throw 'Coach role deleted';
 				}
 				for(var role of roles) {
-					if(role.position >= pos) {
-						message.channel.send('Cannot remove with non-team role ' + role.toString());
-						throw 'Cannot remove with non-team role ' + role.toString();
+					if(!isTeamRole(role, pos)) {
+						message.channel.send('Cannot remove ' + describeRole(role) + ': it is not a team role.');
+						throw 'Cannot remove with non-team role ' + describeRole(role);
 					}
 				}
 				var roleNames = listNames(roles);
@@ -1475,9 +1490,9 @@ var processCommand = async function (command, message) {
 					throw 'Coach role deleted';
 				}
 				for(var role of roles) {
-					if(role.position >= pos) {
-						message.channel.send('Cannot transfer non-team role ' + role.toString());
-						throw 'Cannot transfer non-team role ' + role.toString();
+					if(!isTeamRole(role, pos)) {
+						message.channel.send('Cannot transfer ' + describeRole(role) + ': it is not a team role.');
+						throw 'Cannot transfer non-team role ' + describeRole(role);
 					}
 				}
 				var roleNames = listNames(roles);
@@ -1721,10 +1736,10 @@ var processCommand = async function (command, message) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
 					throw 'Coach role deleted';
 				}
-				for(var i=0; i<roles.length; i++) {
-					if(roles[i].position >= pos) {
-						message.channel.send('Cannot change color of non-team role ' + roles[i].toString());
-						throw 'Cannot paint with non-team role ' + roles[i].toString();
+				for(var role of roles) {
+					if(!isTeamRole(role, pos)) {
+						message.channel.send('Cannot change the color of ' + describeRole(role) + ': it is not a team role.');
+						throw 'Cannot paint with non-team role ' + describeRole(role);
 					}
 				}
 				var roleNames = "";
