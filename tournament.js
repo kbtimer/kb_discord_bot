@@ -61,7 +61,7 @@ var helpSections = {
   },
   'r': {
 		name: 'Remove Team(s) from Room',
-		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to remove. Teams cannot be removed from lounges.\nExample bot-style usage: `.r @A2 @A3 #room-1-text`\nExample NL-style usage: `.remove @A2 @A3 from #room-1-text`'
+		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to remove. A team cannot be removed from its own lounge.\nExample bot-style usage: `.r @A2 @A3 #room-1-text`\nExample NL-style usage: `.remove @A2 @A3 from #room-1-text`'
   },
   't': {
 		name: 'Transfer Team(s) between Rooms',
@@ -1344,10 +1344,13 @@ var processCommand = async function (command, message) {
 					message.channel.send('Cannot add or remove from "' + from.name + '"');
 					throw 'Cannot add or remove from "' + from.name + '"';
 				}
-				// Lounges are private to their team (see .a); removing a team from one would lock it out of its own lounge
-				if(/lounge/i.test(from.name)) {
-					message.channel.send('Cannot remove teams from "' + from.name + '". Lounges are private; `.r` only removes teams from competition rooms.');
-					throw 'Cannot remove from lounge "' + from.name + '"';
+				// A team's lounge is the category "<Team> Lounge" (see createTeam). Removing a team from its own lounge
+				// would lock it out; removing any other team is allowed, to clean up one that got in by mistake.
+				for(var role of roles) {
+					if(role && from.name.toLowerCase() === (role.name + ' Lounge').toLowerCase()) {
+						message.channel.send('Cannot remove ' + role.name + ' from its own lounge.');
+						throw 'Cannot remove ' + role.name + ' from its own lounge';
+					}
 				}
 				var pos = await coachPosition(message.guild);
 				if(pos < 0) {
