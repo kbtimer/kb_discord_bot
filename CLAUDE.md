@@ -10,7 +10,8 @@ A Discord bot ("CKB Bot") for running online Knowledge Bowl tournaments. It buil
 
 ```bash
 npm install
-npm test        # actually just runs `node tournament.js` — there is no test suite or linter
+npm start       # runs the bot (`node tournament.js`) — connects to Discord with the real token
+npm test        # offline syntax check only (`node --check`) — there is no test suite or linter
 ```
 
 The bot reads its token from `config.json` (`{ "BOT_TOKEN": "..." }`). `config.json` and `config_official.json` are gitignored; never commit them. Testing is manual against a real Discord server — `testing.txt` holds a sequence of bot commands (create 14 rooms, create teams, assign teams to rooms, paint, empty) used to exercise a full round.
@@ -53,7 +54,7 @@ A **team** (`createTeam`, the `.n` command) is a role with a random color, plus 
 ### Voice-channel text chat quirk
 
 Discord voice channels have built-in text chat that inherits send permissions from the category. Every voice channel's overwrites must deny SendMessages, AddReactions, and ReadMessageHistory, so after any change to a category's overwrites the voice channels must be rewritten. Two ways this is done:
-- `syncRoom`/`syncHubChannels` re-sync the channels with the category (`lockPermissions`), then call `disableVoiceChannelChatInCategory(category)`.
+- `syncRoom`/`syncHubChannels` (via `syncCategoryChannels`) re-fetch the category, sync text channels (`lockPermissions`), and set each voice channel's overwrites to the category's list `map(withVoiceChatDenied)`. They try every channel even after one fails (`updateEveryChannel`), then throw, so one failure can't leave another channel with a removed team's access.
 - `createRoom` and `empty` write the final overwrites directly: the text channel gets exactly the category's list (so it counts as synced) and the voice channel gets `overwrites.map(withVoiceChatDenied)`. This takes far fewer API calls.
 
 Keep one of these in place whenever you change room permissions. `lockPermissions()` copies the category's **cached** overwrites, which can be stale right after an edit, so re-fetch the category (`category.fetch(true)`) first, once per category.

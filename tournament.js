@@ -156,14 +156,41 @@ var lockPerms = async function (channel) {
 	return Promise.resolve("Success");
 }
 
-// Copies a room category's permissions to its channels, then turns voice-channel chat back off.
-var syncRoom = async function (category) {
+// Runs update(channel) on each channel in turn, carrying on past failures, then throws the first error.
+// Stopping at the first failure would leave the remaining channels with access the category no longer grants.
+var updateEveryChannel = async function (channels, update) {
+	var errors = [];
+	for (var channel of channels) {
+		try {
+			await update(channel);
+		} catch (error) {
+			console.error('Could not update the permissions of ' + channel.name + ':', error);
+			errors.push(error);
+		}
+	}
+	if (errors.length > 0) {
+		throw errors[0];
+	}
+}
+
+// Gives each channel in the category the category's permissions: text channels are synced, and voice channels
+// get the same list with their built-in chat turned off. Writing the voice channel's list directly (as createRoom
+// and empty do) means it can't keep a team's old access just because one of two calls on it failed.
+// skip(channel) leaves a channel as it is.
+var syncCategoryChannels = async function (category, skip = () => false) {
 	// Re-fetch once for the whole category; see lockPerms for why
 	await category.fetch(true);
-	for(var [flake, channel] of category.children.cache) {
-		await channel.lockPermissions();
-	}
-	await disableVoiceChannelChatInCategory(category);
+	var overwrites = [...category.permissionOverwrites.cache.values()];
+	await updateEveryChannel([...category.children.cache.values()].filter(channel => !skip(channel)), function (channel) {
+		return channel.type === ChannelType.GuildVoice ?
+			channel.permissionOverwrites.set(overwrites.map(withVoiceChatDenied)) :
+			channel.lockPermissions();
+	});
+}
+
+// Copies a room category's permissions to its channels, with voice-channel chat turned off.
+var syncRoom = async function (category) {
+	await syncCategoryChannels(category);
 }
 
 // The category a mentioned channel sits in, or null if its parent isn't a category. A thread's parent
@@ -355,11 +382,9 @@ var withVoiceChatDenied = function(overwrite) {
 }
 
 var disableVoiceChannelChatInCategory = async function(category) {
-	for(var [flake, channel] of category.children.cache) {
-		if (channel.type === ChannelType.GuildVoice) {
-			await channel.permissionOverwrites.set([...channel.permissionOverwrites.cache.values()].map(withVoiceChatDenied));
-		}
-	}
+	var voiceChannels = [...category.children.cache.values()].filter(channel => channel.type === ChannelType.GuildVoice);
+	await updateEveryChannel(voiceChannels, channel =>
+		channel.permissionOverwrites.set([...channel.permissionOverwrites.cache.values()].map(withVoiceChatDenied)));
 }
 
 var syncVoiceChannelsToCategory = async function(category) {
@@ -372,17 +397,10 @@ var syncVoiceChannelsToCategory = async function(category) {
 	await Promise.all(promises);
 }
 
-// Copies the Hub category's permissions to its channels, then turns voice-channel chat back off.
+// Copies the Hub category's permissions to its channels, with voice-channel chat turned off.
 // general and announcements are skipped because they have their own @everyone permissions on purpose.
 var syncHubChannels = async function(hubCategory) {
-	// Re-fetch once for the whole category; see lockPerms for why
-	await hubCategory.fetch(true);
-	for(var [flake, channel] of hubCategory.children.cache) {
-		if (channel.name !== 'general' && channel.name !== 'announcements') {
-			await channel.lockPermissions();
-		}
-	}
-	await disableVoiceChannelChatInCategory(hubCategory);
+	await syncCategoryChannels(hubCategory, channel => channel.name === 'general' || channel.name === 'announcements');
 }
 
 //Does not fix voice channel permissions
@@ -1373,6 +1391,21 @@ var runConfirmCallback = async function (message, callback) {
 	}
 }
 
+const MAX_MESSAGE_LENGTH = 2000;
+
+// Shortens a confirmation prompt to fit in one Discord message, keeping its closing "Confirm by reacting" sentence.
+// Prompts repeat the command's list of names, so a long valid .c or .n would otherwise be too long to send.
+var fitConfirmPrompt = function (prompt) {
+	if (prompt.length <= MAX_MESSAGE_LENGTH) {
+		return prompt;
+	}
+	var tailStart = prompt.lastIndexOf('Confirm by reacting');
+	var tail = tailStart >= 0 ? prompt.slice(tailStart) : '';
+	var head = tailStart >= 0 ? prompt.slice(0, tailStart) : prompt;
+	var marker = ' . . . (list shortened; see your message for all of it) ';
+	return head.slice(0, MAX_MESSAGE_LENGTH - marker.length - tail.length) + marker + tail;
+}
+
 var confirm = async function (message, prompt, force, failCallback, successCallback) {
 	try {
 		if (force) {
@@ -1381,7 +1414,7 @@ var confirm = async function (message, prompt, force, failCallback, successCallb
 			return;
 		}
 
-		var msg = await message.channel.send(prompt);
+		var msg = await message.channel.send(fitConfirmPrompt(prompt));
 		msg.react('👍').catch(console.error);
 		const filter = (reaction, user) => reaction.emoji.name === '👍' && user.id === message.author.id;
 		var collected = await msg.awaitReactions({ filter, time: 6000 });

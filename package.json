@@ -4,7 +4,8 @@
   "description": "discord bot for creating and running online knowledge bowl tournaments",
   "main": "tournament.js",
   "scripts": {
-    "test": "node tournament.js"
+    "start": "node tournament.js",
+    "test": "node --check tournament.js"
   },
   "repository": {
     "type": "git",
