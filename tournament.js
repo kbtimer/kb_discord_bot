@@ -126,9 +126,15 @@ const RESERVED_CATEGORY_NAMES = ['control room', 'hub'];
 // True if category is a room made by .c: two channels, and not Control Room, Hub, or a lounge (team lounges,
 // Coaches Lounge, Lockdown Lounge). Team lounges also have exactly two channels, so the name check matters.
 // .c refuses room names containing "lounge", so this never rejects a real room.
+// A room is what createRoom makes: a category holding exactly one text and one voice channel
 var isCompetitionRoom = function (category) {
-	return !!category && category.type === ChannelType.GuildCategory && category.children.cache.size === 2 &&
-		!RESERVED_CATEGORY_NAMES.includes(category.name.toLowerCase()) && !/lounge/i.test(category.name);
+	if (!category || category.type !== ChannelType.GuildCategory || category.children.cache.size !== 2 ||
+			RESERVED_CATEGORY_NAMES.includes(category.name.toLowerCase()) || /lounge/i.test(category.name)) {
+		return false;
+	}
+	var children = category.children.cache;
+	return children.some(channel => channel.type === ChannelType.GuildText) &&
+		children.some(channel => channel.type === ChannelType.GuildVoice);
 }
 
 var roleNameInUse = function (guild, name) {
@@ -1500,17 +1506,18 @@ const TEAM_PERMISSION_NAMES = new Map([
 	[PermissionFlagsBits.AddReactions, 'add reactions']
 ]);
 
-// Describes how a team's overwrite falls short of what the bot gives it, or returns null if it doesn't.
+// Describes how a team's permissions in a category fall short of what the bot gives it, or returns null if they don't.
 // Only the permissions the bot sets are checked, so a deliberate extra (say, Attach Files) isn't flagged.
-// A permission left unset falls back to @everyone's server permissions from .i, which allow all of these,
-// so only an explicit deny takes one away; but rooms must deny history, since unset means readable.
-var teamPermissionGaps = function (overwrite, readHistory) {
-	var missing = [...TEAM_PERMISSION_NAMES].filter(([bit]) => overwrite.deny.has(bit)).map(([, name]) => name);
+// This uses the team's effective permissions (server permissions, then the category's @everyone entry, then
+// the team's own), so an @everyone deny that the team's entry leaves unset counts as taking a permission away.
+var teamPermissionGaps = function (category, team, readHistory) {
+	var permissions = category.permissionsFor(team);
+	var missing = [...TEAM_PERMISSION_NAMES].filter(([bit]) => !permissions.has(bit)).map(([, name]) => name);
 	var gaps = missing.length > 0 ? ['can\'t ' + (missing.length <= 2 ? missing.join(' or ') :
 		missing.slice(0, -1).join(', ') + ', or ' + missing[missing.length - 1])] : [];
-	if (readHistory && overwrite.deny.has(PermissionFlagsBits.ReadMessageHistory)) {
+	if (readHistory && !permissions.has(PermissionFlagsBits.ReadMessageHistory)) {
 		gaps.push('can\'t read earlier messages');
-	} else if (!readHistory && !overwrite.deny.has(PermissionFlagsBits.ReadMessageHistory)) {
+	} else if (!readHistory && permissions.has(PermissionFlagsBits.ReadMessageHistory)) {
 		gaps.push('can read earlier rounds\' messages');
 	}
 	return gaps.length > 0 ? gaps.join(' and ') : null;
@@ -1556,8 +1563,18 @@ var verifyServer = async function (guild) {
 
 	var categories = [...guild.channels.cache.values()].filter(channel => channel.type === ChannelType.GuildCategory)
 		.sort((a, b) => a.rawPosition - b.rawPosition);
-	var loungeCategories = new Map(categories.filter(category => /lounge/i.test(category.name))
-		.map(category => [category.name.trim().toLowerCase(), category]));
+	// Lounge name (lowercased) -> every category with that name, so a duplicate can't hide behind another
+	var loungeCategories = new Map();
+	for (var category of categories.filter(category => /lounge/i.test(category.name))) {
+		var key = category.name.trim().toLowerCase();
+		loungeCategories.set(key, [...(loungeCategories.get(key) ?? []), category]);
+	}
+	for (var sameName of loungeCategories.values()) {
+		if (sameName.length > 1) {
+			problem('There are ' + sameName.length + ' categories named "' + sameName[0].name + '". The bot finds lounges by name, ' +
+				'so there should be one. Each is checked below; delete the extra by hand.');
+		}
+	}
 
 	// A team role dragged above Coach stops counting as a team
 	for (var role of guild.roles.cache.values()) {
@@ -1606,7 +1623,7 @@ var verifyServer = async function (guild) {
 				if (overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
 					room.teams.push(role);
 					roomsOfTeam.get(role.id).push(category);
-					var gaps = teamPermissionGaps(overwrite, false);
+					var gaps = teamPermissionGaps(category, role, false);
 					if (gaps) {
 						problem('In ' + label + ', team ' + role.name + ' ' + gaps + '. `.a` the team to the room again to fix it.', [category]);
 					}
@@ -1628,11 +1645,12 @@ var verifyServer = async function (guild) {
 		if (inRooms.length > 1) {
 			problem('Team ' + team.name + ' is in ' + inRooms.length + ' rooms: ' + listNames(inRooms.map(category => '"' + category.name + '"')) + '.', inRooms);
 		}
-		var lounge = loungeCategories.get(team.name.toLowerCase() + ' lounge');
+		var lounges = loungeCategories.get(team.name.toLowerCase() + ' lounge') ?? [];
+		var lounge = lounges[0];
 		if (!lounge) {
 			problem('Team ' + team.name + ' has no "' + team.name + ' Lounge".');
-		} else if (!allowsView(lounge, team.id)) {
-			problem('Team ' + team.name + ' can\'t see its lounge.');
+		} else if (lounges.some(each => !allowsView(each, team.id))) {
+			problem('Team ' + team.name + ' can\'t see its lounge' + (lounges.length > 1 ? ' (one of the ' + lounges.length + ' with that name)' : '') + '.');
 		}
 		if (hub && !allowsView(hub, team.id)) {
 			problem('Team ' + team.name + ' can\'t see the Hub.' + (lounge ? ' Run `.n "' + team.name + '"` to give it access.' : ''));
@@ -1640,7 +1658,8 @@ var verifyServer = async function (guild) {
 	}
 
 	// Team lounges
-	for (var [loungeName, lounge] of loungeCategories) {
+	for (var lounge of [...loungeCategories.values()].flat()) {
+		var loungeName = lounge.name.trim().toLowerCase();
 		if (loungeName === 'coaches lounge' || loungeName === 'lockdown lounge') {
 			continue;
 		}
@@ -1658,7 +1677,7 @@ var verifyServer = async function (guild) {
 				continue;
 			}
 			if (owner && overwrite.id === owner.id) {
-				var gaps = allowsView(lounge, owner.id) && teamPermissionGaps(overwrite, true);
+				var gaps = allowsView(lounge, owner.id) && teamPermissionGaps(lounge, owner, true);
 				if (gaps) {
 					problem('In ' + label + ', team ' + owner.name + ' ' + gaps + '. Fix it by hand in the category\'s permissions.');
 				}
@@ -1702,7 +1721,13 @@ var verifyServer = async function (guild) {
 	// Categories the bot doesn't recognize, e.g. a room that gained or lost a channel, which commands then refuse
 	for (var category of categories) {
 		if (!isCompetitionRoom(category) && !/lounge/i.test(category.name) && !RESERVED_CATEGORY_NAMES.includes(category.name.toLowerCase())) {
-			problem('"' + category.name + '" has ' + category.children.cache.size + ' channels. A room needs exactly a text and a voice channel, ' +
+			var children = [...category.children.cache.values()];
+			var textCount = children.filter(channel => channel.type === ChannelType.GuildText).length;
+			var voiceCount = children.filter(channel => channel.type === ChannelType.GuildVoice).length;
+			var otherCount = children.length - textCount - voiceCount;
+			var plural = (count, noun) => count + ' ' + noun + (count === 1 ? '' : 's');
+			problem('"' + category.name + '" has ' + plural(textCount, 'text channel') + ', ' + plural(voiceCount, 'voice channel') +
+				(otherCount > 0 ? ', and ' + plural(otherCount, 'other channel') : '') + '. A room needs exactly a text and a voice channel, ' +
 				'so the bot can\'t manage this one and teams in it aren\'t counted here.');
 		}
 	}
