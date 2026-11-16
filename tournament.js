@@ -1561,6 +1561,11 @@ var verifyServer = async function (guild) {
 	var coachPos = await coachPosition(guild);
 	var teams = coachPos < 0 ? [] : [...guild.roles.cache.values()].filter(role => isTeamRole(role, coachPos)).sort(byName);
 	var teamIds = new Set(teams.map(team => team.id));
+	// Administrator overrides every channel overwrite, so the room checks below can't see what such a team can reach
+	for (var team of teams.filter(team => team.permissions.has(PermissionFlagsBits.Administrator))) {
+		problem('Team ' + team.name + ' has the Administrator permission, so its members can see every room, lounge, and the Control Room, ' +
+			'whatever room it\'s in below. Turn Administrator off for the role in Server Settings > Roles.', [], true);
+	}
 
 	var categories = [...guild.channels.cache.values()].filter(channel => channel.type === ChannelType.GuildCategory)
 		.sort((a, b) => a.rawPosition - b.rawPosition);
@@ -1814,14 +1819,25 @@ var verifyReport = function (result, onlyRoom) {
 	return lines;
 }
 
-// Sends lines in as few messages as fit under Discord's length limit
+// Sends lines in as few messages as fit under Discord's length limit. A line too long for one message
+// (e.g. a long list of team names) is split after a comma so no names are lost.
 var sendLines = async function (channel, lines) {
-	var chunk = '';
+	var limit = MAX_MESSAGE_LENGTH - 100;
+	var pieces = [];
 	for (var line of lines) {
-		if (line.length > MAX_MESSAGE_LENGTH - 100) {
-			line = line.slice(0, MAX_MESSAGE_LENGTH - 105) + ' . . .';
+		while (line.length > limit) {
+			var cut = line.lastIndexOf(', ', limit - 1) + 1; // keep the comma on the first piece
+			if (cut <= 0) {
+				cut = limit;
+			}
+			pieces.push(line.slice(0, cut));
+			line = line.slice(cut).trimStart();
 		}
-		if (chunk && chunk.length + 1 + line.length > MAX_MESSAGE_LENGTH - 100) {
+		pieces.push(line);
+	}
+	var chunk = '';
+	for (var line of pieces) {
+		if (chunk && chunk.length + 1 + line.length > limit) {
 			await channel.send(chunk);
 			chunk = '';
 		}
