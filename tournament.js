@@ -1265,11 +1265,22 @@ var confirm = async function (message, prompt, force, failCallback, successCallb
 	}
 }
 
+// .w (secret code for the written) can be run by anyone, but only in a lounge
+var isWrittenCodeCommand = function (command, message) {
+	return command.indexOf('.w') === 0 && message.channel.name.indexOf("lounge") > -1;
+}
+
+// Every other command needs Control Room, Staff, or the server owner
+var isStaffCommand = function (command, message) {
+	return !isWrittenCodeCommand(command, message) && command.indexOf('.') === 0 &&
+		(hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.author.id === message.guild.ownerId);
+}
+
 var processCommand = async function (command, message) {
 
 	//console.log("In processCommand, processing the command " + command);
 	//These are commands that can be run by anyone
-	if (command.indexOf('.w') === 0 && message.channel.name.indexOf("lounge") > -1) {
+	if (isWrittenCodeCommand(command, message)) {
 		//Give them a secret code for their written
 		var id1 = message.channel.id.padStart(10, 1);
 		var id2 = message.guild.id.padStart(10, 1);
@@ -1304,7 +1315,7 @@ var processCommand = async function (command, message) {
 
 		message.channel.send(greeting + " Your secret code for today's written is " + code);
 
-	} else if(command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.author.id === message.guild.ownerId)) {
+	} else if (isStaffCommand(command, message)) {
 
 		//console.log("Is Control Room or Staff");
 
@@ -2104,7 +2115,8 @@ var processCommand = async function (command, message) {
 // Optional profiling of Discord API traffic. Turn it on with PROFILE=1 (e.g. `PROFILE=1 node tournament.js`).
 // After each command it logs the wall time, how many API calls it made (by route), how long discord.js
 // held requests back to stay under rate limits, and any 429s Discord returned anyway.
-// The counters are global, so two commands running at once (from different messages) mix their numbers.
+// The counters are global. Staff commands on one server run one at a time, but commands on different
+// servers (or a `.w` alongside a staff command) can overlap and mix their numbers.
 const PROFILE = process.env.PROFILE === '1';
 var profileStats = null;
 
@@ -2161,13 +2173,44 @@ var reportProfile = function (command, startMs) {
 	console.log(lines.join('\n'));
 }
 
-client.on('messageCreate', async function (message) {
-	// Ignore messages from bots (including this one) and anything outside a server
-	if (message.author.bot || !message.guild) {
-		return;
+// Staff commands run one message at a time per server. Several commands read a whole overwrite list and
+// write it back with set() (addTeamsToHub, empty), so two overlapping commands could silently undo each
+// other's changes, e.g. `.e` on a room wiping a team that a concurrent `.a` had just added.
+// Maps guild id -> promise that settles when the last queued message on that server finishes.
+var guildCommandQueues = new Map();
+
+var QUEUED_REACTION = '⏳';
+
+var runInGuildQueue = async function (message, work) {
+	var guildId = message.guild.id;
+	var previous = guildCommandQueues.get(guildId);
+	if (previous) {
+		// Show the message was seen and is waiting, so a long `.n` ahead of it doesn't look like a hang
+		message.react(QUEUED_REACTION).catch(console.error);
 	}
-	var content = message.content.split('\n');
-	for (var str of content) {
+	// catch() so one failed message doesn't stop everything queued behind it
+	var current = (previous || Promise.resolve()).catch(function () {}).then(async function () {
+		if (previous) {
+			var reaction = message.reactions.cache.get(QUEUED_REACTION);
+			if (reaction) {
+				reaction.users.remove(client.user.id).catch(console.error);
+			}
+		}
+		await work();
+	});
+	guildCommandQueues.set(guildId, current);
+	try {
+		await current;
+	} finally {
+		// Drop the entry once nothing is queued behind this message, so idle servers don't hold a promise
+		if (guildCommandQueues.get(guildId) === current) {
+			guildCommandQueues.delete(guildId);
+		}
+	}
+}
+
+var runCommandLines = async function (lines, message) {
+	for (var str of lines) {
 		var startMs = Date.now();
 		if (PROFILE) {
 			resetProfileStats();
@@ -2182,7 +2225,20 @@ client.on('messageCreate', async function (message) {
 			reportProfile(str, startMs);
 		}
 	}
-  return;
+}
+
+client.on('messageCreate', async function (message) {
+	// Ignore messages from bots (including this one) and anything outside a server
+	if (message.author.bot || !message.guild) {
+		return;
+	}
+	var lines = message.content.split('\n');
+	// Ordinary chat and `.w` don't change permissions, so they don't wait behind staff commands
+	if (lines.some(line => isStaffCommand(line, message))) {
+		await runInGuildQueue(message, () => runCommandLines(lines, message));
+	} else {
+		await runCommandLines(lines, message);
+	}
 });
 
 //////////////////////////////////////////////////////////////////////
