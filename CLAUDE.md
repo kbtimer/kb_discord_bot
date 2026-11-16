@@ -15,6 +15,8 @@ npm test        # actually just runs `node tournament.js` — there is no test s
 
 The bot reads its token from `config.json` (`{ "BOT_TOKEN": "..." }`). `config.json` and `config_official.json` are gitignored; never commit them. Testing is manual against a real Discord server — `testing.txt` holds a sequence of bot commands (create 14 rooms, create teams, assign teams to rooms, paint, empty) used to exercise a full round.
 
+For tournaments the bot is hosted on a DigitalOcean droplet as a systemd service; see `deploy/README.md`. Only one copy may run per token, so stop the hosted one before running locally with the same `config.json`.
+
 Run with `PROFILE=1 node tournament.js` to log, after each command, its wall time, API calls by route, and rate-limit waits; long waits and 429s print as they happen. Use it before optimizing: speed is usually set by round trips (~0.3s each) to Discord rather than by rate limits.
 
 ## Discord API limits

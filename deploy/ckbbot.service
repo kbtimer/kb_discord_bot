@@ -1,0 +1,16 @@
+[Unit]
+Description=CKB Bot (Knowledge Bowl Discord bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ckbbot
+WorkingDirectory=/opt/ckbbot
+ExecStart=/usr/bin/node tournament.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
