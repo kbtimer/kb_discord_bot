@@ -1401,11 +1401,26 @@ var processCommand = async function (command, message) {
 				await confirm(message, 'Are you sure you want to add team(s) ' + roleNames + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The addition is cancelled.');
 				}, async function () {
-					await Promise.all(roles.map(role => addTeamToRoom(role, to)));
-					await syncRoom(to);
-					// Names, not mentions: team roles are mentionable, so a mention would ping every member
-					await message.channel.send((roles.length === 1 ? 'Team ' : 'Teams ') + listNamesForMessage(roles.map(role => role.name), 'teams') +
-						(roles.length === 1 ? ' has' : ' have') + ' been added to room "' + to.name + '."');
+					// Catch each edit, so a failure doesn't end the command (and let the next queued one start)
+					// while the other edits are still running, and so the teams that were added still get synced
+					var failed = [];
+					var failedError = null;
+					await Promise.all(roles.map(role => addTeamToRoom(role, to).catch(function (error) {
+						console.error('Could not add ' + role.name + ' to ' + to.name + ':', error);
+						failed.push(role);
+						failedError = failedError ?? error;
+					})));
+					var added = roles.filter(role => !failed.includes(role));
+					if (added.length > 0) {
+						await syncRoom(to);
+						// Names, not mentions: team roles are mentionable, so a mention would ping every member
+						await message.channel.send((added.length === 1 ? 'Team ' : 'Teams ') + listNamesForMessage(added.map(role => role.name), 'teams') +
+							(added.length === 1 ? ' has' : ' have') + ' been added to room "' + to.name + '."');
+					}
+					if (failed.length > 0) {
+						await message.channel.send('Could not add ' + listNamesForMessage(failed.map(role => role.name), 'teams') + ' to room "' + to.name + '." ' +
+							(rateLimitMessage(failedError) ?? 'Check the room\'s permissions, or try again.'));
+					}
 				});
 			} catch (e) {
 				console.error(e);
