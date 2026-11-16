@@ -38,4 +38,4 @@ A **team** (`createTeam`, the `.n` command) is a role with a random color, plus 
 
 ### Voice-channel text chat quirk
 
-Discord voice channels have built-in text chat that inherits send permissions from the category. After any change to a category's overwrites, the code calls `disableVoiceChannelChatInCategory(category)`, which rewrites each voice channel's overwrites to deny SendMessages, AddReactions, and ReadMessageHistory. Keep this call in place whenever you change room permissions. `lockPerms` is currently an empty stub that is still called in several places.
+Discord voice channels have built-in text chat that inherits send permissions from the category. After any change to a category's overwrites, the code calls `disableVoiceChannelChatInCategory(category)`, which rewrites each voice channel's overwrites to deny SendMessages, AddReactions, and ReadMessageHistory. Keep this call in place whenever you change room permissions. `lockPerms(channel)` re-syncs a channel's overwrites with its parent category, and is typically called just before the voice-chat lockdown.

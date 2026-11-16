@@ -1047,7 +1047,7 @@ var processCommand = async function (command, message) {
 
 		message.channel.send('Hello ' + teamName + "! Your secret code for today's written is " + code);
 
-	} else if(hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.member === await message.channel.guild.fetchOwner()) {
+	} else if(command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.author.id === message.guild.ownerId)) {
 
 		//console.log("Is Control Room or Staff");
 
@@ -1119,7 +1119,9 @@ var processCommand = async function (command, message) {
 					// disable the chat channel in the voice channels
 					//I don't see a better way to do this.  I wish
 					// I could just disable voice channel chat.
-					await syncVoiceChannelsToCategory(to);
+					for(var [flake, channel] of to.children.cache) {
+						await lockPerms(channel);
+					}
 					await disableVoiceChannelChatInCategory(to);
 				});
 			} catch (e) {
@@ -1223,6 +1225,9 @@ var processCommand = async function (command, message) {
 						} else {
 							message.channel.send('All specified rooms emptied.');
 						}
+					}).catch(function (error) {
+						console.error(error);
+						message.channel.send('Could not empty room "' + channels[index].parent.name + '". Stopping; later rooms were not emptied.');
 					});
 				}
 				confirm(message, 'Are you sure you want to empty the specified rooms? Confirm by reacting with \:thumbsup:.', force, function () {
@@ -1234,7 +1239,7 @@ var processCommand = async function (command, message) {
 				console.error(e);
 				help(message.channel, ['e']);
 			}
-		} else if (command.indexOf('.i') === 0 && message.member === await(message.channel.guild.fetchOwner())) {
+		} else if (command.indexOf('.i') === 0 && message.author.id === message.guild.ownerId) {
 			if(command.indexOf(message.channel.guild.name) < 0) {
 				help(message.channel, ['i']);
 			} else {
@@ -1247,7 +1252,7 @@ var processCommand = async function (command, message) {
 					});
 				});
 			}
-		} else if (command.indexOf('.z') === 0 && message.member === await message.channel.guild.fetchOwner() && message.member.user === (await client.application.fetch()).owner) {
+		} else if (command.indexOf('.z') === 0 && message.author.id === message.guild.ownerId && message.author.id === (await client.application.fetch()).owner?.id) {
 
 			message.channel.send('Writing member update log to server . . . ');
 			try {
@@ -1314,14 +1319,13 @@ var processCommand = async function (command, message) {
 				confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The creation is cancelled.');
 				}, function () {
-					for (var i = 1; i < names.length; i += 2) {
-						var name = names[i];
+					for (let i = 1; i < names.length; i += 2) {
+						let name = names[i];
 						createRoom(message.channel.guild, name).then(function (textChannel) {
-							// message.channel.send('Room "' + name + '" has been created.');
 							message.channel.send('Room "' + textChannel.parent.name + '" has been created.');
 						}).catch(function (error) {
 							console.error(error);
-							message.channel.send('Could not be create room "' + textChannel + '". Please try using a different name.');
+							message.channel.send('Could not create room "' + name + '". Please try using a different name.');
 							help(message.channel, ['c']);
 						});
 					}
@@ -1385,7 +1389,7 @@ var processCommand = async function (command, message) {
 					}
 					roleNames += " and " + roles[roles.length-1].toString();
 				}
-				matches = command.match(/\#[A-F0-9]{6}/);
+				var matches = command.match(/\#[A-F0-9]{6}/i);
 				if(matches) {
 					var newColor = matches[0];
 					confirm(message, 'Are you sure you want to paint ' + roleNames + ' to be ' + newColor + '? Confirm by reacting with \:thumbsup:.', force, function() {
@@ -1439,7 +1443,7 @@ var processCommand = async function (command, message) {
 				confirm(message, 'Are you sure you want to delete the specified room[s]? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The deletion is cancelled.');
 				}, function () {
-					for (var text of channels) {
+					for (const text of channels) {
 						deleteRoom(text).then(function (name) {
 							message.channel.send('Room "' + name + '" has been deleted.');
 						}).catch(function (error) {
@@ -1621,7 +1625,7 @@ var processCommand = async function (command, message) {
 							userNames += ", "
 						}
 					}
-					userNames += " and " + userNames[usernames.length-1].toString();
+					userNames += " and " + users[users.length-1].toString();
 				}
 				confirm(message, "DANGER!  Are you sure you want to grant users(s) " + userNames + " Control Room privileges? Confirm by reacting with \:thumbsup:.", force, function() {
 					message.channel.send("No confirmation was received.  The granting of privileges was cancelled.");
@@ -1662,7 +1666,7 @@ var processCommand = async function (command, message) {
 							userNames += ", "
 						}
 					}
-					userNames += " and " + userNames[usernames.length-1].toString();
+					userNames += " and " + users[users.length-1].toString();
 				}
 				confirm(message, "Are you sure you want to remove users(s) " + userNames + " from Control Room privileges? Confirm by reacting with \:thumbsup:.", force, function() {
 					message.channel.send("No confirmation was received.  The revocation of privileges was cancelled.");
@@ -1726,13 +1730,17 @@ var processCommand = async function (command, message) {
 };
 
 client.on('messageCreate', async function (message) {
-	//console.log(message);
+	// Ignore messages from bots (including this one) and anything outside a server
+	if (message.author.bot || !message.guild) {
+		return;
+	}
 	var content = message.content.split('\n');
 	for (var str of content) {
-		//console.log("processing " + str);
-		//console.log("Send by " + message.member);
-		//console.log("guild owner: " + await(message.channel.guild.fetchOwner()));
-		await processCommand(str, message);
+		try {
+			await processCommand(str, message);
+		} catch (e) {
+			console.error('Error processing command "' + str + '":', e);
+		}
 	}
   return;
 });
@@ -1741,30 +1749,45 @@ client.on('messageCreate', async function (message) {
 //Delete polls
 client.on('raw', async function(raw) {
 	//console.log(raw);
-	if(raw && raw.t && raw.t == 'MESSAGE_CREATE' && raw.d && raw.d.poll) {
-		const user = await client.users.fetch(raw.d.author.id);
-		const channel = client.channels.cache.get(raw.d.channel_id)
+	if(!(raw && raw.t && raw.t == 'MESSAGE_CREATE' && raw.d && raw.d.poll && raw.d.guild_id)) {
+		return;
+	}
+	try {
+		// fetch (not cache.get) so polls in threads the bot hasn't loaded are still found
+		const channel = await client.channels.fetch(raw.d.channel_id);
 		const guild = channel.guild;
-		const member = await guild.members.fetch(raw.d.author.id);
+		// member is null if the poster has already left; their poll is still deleted
+		const member = await guild.members.fetch(raw.d.author.id).catch(() => null);
 		const msg = await channel.messages.fetch(raw.d.id);
 
 		if(!hasRole(member, 'Control Room')) {
 			var msgString = "Poll posted by \"" + member?.nickname + "\" (" + raw.d.author.id + ": " + raw.d.author.username + ") in \"" + channel.name + "\" with question \"" + raw.d.poll?.question?.text + "\" and options ";
 			var textOptions = [];
-			for(answer of raw.d.poll?.answers) {
+			for(const answer of raw.d.poll?.answers ?? []) {
 				textOptions.push("\"" + answer?.poll_media?.text + "\"")
 			}
 			msgString += textOptions.join(", ");
 			console.log(msgString);
 			let botChannel = guild?.channels?.cache?.find(channel => channel.name === "bot-commands");
-			botChannel?.send(msgString);
 			await msg?.delete();
+			await botChannel?.send(msgString);
 		}
+	} catch (e) {
+		console.error('Error handling poll:', e);
 	}
 	return;
 });
 //Delete polls
 //////////////////////////////////////////////////////////////////////
+
+// Safety net: log errors instead of letting one failed Discord call crash the bot on every server.
+// (Since Node 15, an unhandled promise rejection exits the process.)
+process.on('unhandledRejection', function (error) {
+	console.error('Unhandled error:', error);
+});
+client.on(Events.Error, function (error) {
+	console.error('Discord client error:', error);
+});
 
 client.login(config.BOT_TOKEN);
 
