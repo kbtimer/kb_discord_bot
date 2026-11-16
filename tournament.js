@@ -175,6 +175,17 @@ var listNames = function (items) {
 	return names.slice(0, -1).join(', ') + ', and ' + names[names.length - 1];
 }
 
+// Splits the arguments of .c or .n ("Name One" "Name Two") into names. Returns null unless the quotes pair up
+// and nothing but spaces sits outside them, so a missing quote or unquoted word is reported, not guessed at:
+// split alone would read "Alpha" "Beta as two names and silently drop unquoted text.
+var parseQuotedNames = function (content) {
+	var parts = content.split(/["“”]/g);
+	if (parts.length < 3 || parts.length % 2 === 0 || parts.some((part, i) => i % 2 === 0 && part.trim() !== '')) {
+		return null;
+	}
+	return parts.filter((part, i) => i % 2 === 1);
+}
+
 // "3 minutes", "47 hours"
 var describeDuration = function (ms) {
 	var minutes = Math.ceil(ms / 60000);
@@ -1406,6 +1417,9 @@ var processCommand = async function (command, message) {
 		//message.channel.send('val2: ' + val2);
 
 
+		// The day count uses the host's local timezone, so the code rolls over at local midnight and can differ
+		// between hosts in different timezones. That's intended: codes are only ever checked by asking the bot
+		// in the team's lounge, never computed anywhere else, so only consistency within one host matters.
 		var date1 = new Date("01/01/2000");
 		var today = new Date();
 		var difference_in_time = today.getTime() - date1.getTime();
@@ -1729,20 +1743,19 @@ var processCommand = async function (command, message) {
 		} else if (cmd === 'c' && hasRole(message.member, 'Control Room')) {
 			try {
 				var content = command.substr(command.indexOf(' ') + 1).trim();
-				var names = content.split(/["“”]/g);
-				if (names.length < 2) {
+				var names = parseQuotedNames(content);
+				if (!names) {
+					message.channel.send("Put each room name in quotation marks, with nothing but spaces between them, like `\"Name One\" \"Name Two\"`. Check for a missing quotation mark. No rooms were created.");
 					help(message.channel, ['c']);
 					return;
 				}
-				for (var i = 1; i < names.length; i+= 2) {
+				for (var i = 0; i < names.length; i++) {
 					var name = names[i];
 					var Exp = /[a-z0-9]/i;
 					var Exp2 = /^[a-zA-Z0-9._ -]+$/;
 					if(!Exp.test(name)) {
-						message.channel.send("Something is wrong with your list of room names.\nEither one of your rooms has no alphanumeric characters, or you missed a quotation mark.\nThese are the names I found, and I see a problem with name " + (Math.floor(i/2)+1) + ":");
-						for (var j = 1; j < names.length; j += 2) {
-							message.channel.send("" + (Math.floor(j/2)+1) + ": \"" + names[j] + "\"");
-						}
+						message.channel.send("Something is wrong with your list of room names.\nEither one of your rooms has no alphanumeric characters, or you missed a quotation mark.\nThese are the names I found, and I see a problem with name " + (i+1) + ":\n" +
+							names.map((n, j) => (j+1) + ": \"" + n + "\"").join("\n"));
 						return;
 					}
 					if(!Exp2.test(name)) {
@@ -1764,7 +1777,7 @@ var processCommand = async function (command, message) {
 					// and is what retrying a room after a failure used to create.
 					var lowerName = name.trim().toLowerCase();
 					if(message.guild.channels.cache.some(channel => channel.type === ChannelType.GuildCategory && channel.name.trim().toLowerCase() === lowerName) ||
-						 names.slice(1, i).some((other, j) => j % 2 === 0 && other.trim().toLowerCase() === lowerName)) {
+						 names.slice(0, i).some(other => other.trim().toLowerCase() === lowerName)) {
 						message.channel.send("The room name \"" + name + "\" is already used by a category in this server or by another room in this command. No rooms were created.");
 						return;
 					}
@@ -1772,7 +1785,7 @@ var processCommand = async function (command, message) {
 				await confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The creation is cancelled.');
 				}, async function () {
-					var roomNames = names.filter((n, idx) => idx % 2 === 1);
+					var roomNames = names;
 					var failed = new Set();
 					var failReason = null;
 					var leftovers = [];
@@ -1985,8 +1998,9 @@ var processCommand = async function (command, message) {
 		} else if (cmd === 'n' && hasRole(message.member, 'Control Room')) {
 			try {
 				var content = command.substr(command.indexOf(' ') + 1).trim();
-				var names = content.split(/["“”]/g);
-				if(names.length < 2) {
+				var names = parseQuotedNames(content);
+				if (!names) {
+					message.channel.send("Put each team name in quotation marks, with nothing but spaces between them, like `\"Name One\" \"Name Two\"`. Check for a missing quotation mark. No teams were created.");
 					help(message.channel, ['b', 'n']);
 					return;
 				}
@@ -1997,15 +2011,13 @@ var processCommand = async function (command, message) {
 					return;
 				}
 				var existingTeams = [];
-				for (var i = 1; i < names.length; i+= 2) {
+				for (var i = 0; i < names.length; i++) {
 					var name = names[i];
 					var Exp = /[a-z0-9]/i;
 					var Exp2 = /^[a-zA-Z0-9._-]+$/;
 					if(!Exp.test(name)) {
-						message.channel.send("Something is wrong with your list of team names.\nEither one of your teams has no alphanumeric characters, or you missed a quotation mark.\nThese are the names I found, and I see a problem with name " + (Math.floor(i/2)+1) + ":");
-						for (var j = 1; j < names.length; j += 2) {
-							message.channel.send("" + (Math.floor(j/2)+1) + ": \"" + names[j] + "\"");
-						}
+						message.channel.send("Something is wrong with your list of team names.\nEither one of your teams has no alphanumeric characters, or you missed a quotation mark.\nThese are the names I found, and I see a problem with name " + (i+1) + ":\n" +
+							names.map((n, j) => (j+1) + ": \"" + n + "\"").join("\n"));
 						return;
 					}
 					if(!Exp2.test(name)) {
@@ -2018,7 +2030,7 @@ var processCommand = async function (command, message) {
 						message.channel.send("Team names must be less than " + MAX_TEAM_NAME_LENGTH + " characters long. The team name \"" + name + "\" is " + name.length + " characters.");
 						return;
 					}
-					var duplicate = names.slice(1, i).some((other, j) => j % 2 === 0 && other.toLowerCase() === name.toLowerCase());
+					var duplicate = names.slice(0, i).some(other => other.toLowerCase() === name.toLowerCase());
 					// A team from an earlier .n isn't created again, only given Hub access if it's missing,
 					// so a .n whose Hub step failed can be run again to finish its teams
 					var existingTeam = duplicate ? null : existingTeamRole(message.guild, name, coachPos);
@@ -2043,7 +2055,7 @@ var processCommand = async function (command, message) {
 				}, async function () {
 					try {
 						var existingNames = existingTeams.map(role => role.name.toLowerCase());
-						var teamNames = names.filter((n, idx) => idx % 2 === 1 && !existingNames.includes(n.toLowerCase()));
+						var teamNames = names.filter(n => !existingNames.includes(n.toLowerCase()));
 						if (existingTeams.length > 0) {
 							await message.channel.send(listNamesForMessage(existingTeams.map(role => role.name), 'teams') +
 								(existingTeams.length === 1 ? ' already exists' : ' already exist') + ', so ' + (existingTeams.length === 1 ? 'it' : 'they') +
