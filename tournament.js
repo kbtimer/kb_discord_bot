@@ -166,18 +166,23 @@ var lockPerms = async function (channel) {
 	return Promise.resolve("Success");
 }
 
-// Runs update(channel) on each channel in turn, carrying on past failures, then throws the first error.
-// Stopping at the first failure would leave the remaining channels with access the category no longer grants.
+// How many channels updateEveryChannel updates at once. Each channel has its own rate limit, so this overlaps
+// round trips (a Hub sync can cover dozens of lounge channels) while staying far below Discord's global limit.
+const CHANNEL_UPDATE_CONCURRENCY = 4;
+
+// Runs update(channel) on every channel, a few at a time, carrying on past failures; once all have finished,
+// throws the first error. Stopping at the first failure would leave the remaining channels with access the
+// category no longer grants, and returning early would let the next queued command start while they still run.
 var updateEveryChannel = async function (channels, update) {
 	var errors = [];
-	for (var channel of channels) {
+	await runWithConcurrency(channels, CHANNEL_UPDATE_CONCURRENCY, async function (channel) {
 		try {
 			await update(channel);
 		} catch (error) {
 			console.error('Could not update the permissions of ' + channel.name + ':', error);
 			errors.push(error);
 		}
-	}
+	});
 	if (errors.length > 0) {
 		throw errors[0];
 	}
@@ -198,14 +203,9 @@ var syncCategoryChannels = async function (category, skip = () => false) {
 	});
 }
 
-// Copies a room category's permissions to its channels, with voice-channel chat turned off.
-var syncRoom = async function (category) {
-	await syncCategoryChannels(category);
-}
-
 // The category a mentioned channel sits in, or null if its parent isn't a category. A thread's parent
 // is its text channel, so without this .a/.r/.t would edit that text channel's overwrites (skipping
-// the Control Room/Hub check, since the channel isn't named that) before syncRoom fails on it.
+// the Control Room/Hub check, since the channel isn't named that).
 var roomCategoryOf = function (channel) {
 	var parent = channel?.parent;
 	return parent && parent.type === ChannelType.GuildCategory ? parent : null;
@@ -413,62 +413,54 @@ var syncHubChannels = async function(hubCategory) {
 	await syncCategoryChannels(hubCategory, channel => channel.name === 'general' || channel.name === 'announcements');
 }
 
-//Does not fix voice channel permissions
-var addTeamToRoom = async function(role, to, channel) {
-  await to.permissionOverwrites.edit(role, {
-		ViewChannel: true,
-		SendMessages: true,
-		Connect: true,
-		AddReactions: true,
-		ReadMessageHistory: false,
-		Speak: true
-		//'USE_EXTERNAL_EMOJIS': true,
-		//'ATTACH_FILES': true,
-		//'EMBED_LINKS': true
-  });
-	if(channel) {
-		channel.send('Team ' + role.name + ' has been added to room "' + to.name + '."');
-	}
-	return Promise.resolve("Success");
+// Rewrites a room's overwrites with one write per channel instead of one per team. The category is re-fetched,
+// change(overwrites) edits a plain copy of its list, and the result is written to the category, then to its
+// channels at the same time: the text channel gets exactly the category's list (so it stays synced) and the
+// voice channel gets it with its built-in chat turned off, as in empty. The category is written first, so if
+// that fails nothing has changed; if a channel then fails, the others are still written (updateEveryChannel).
+var rewriteRoom = async function (room, change) {
+	await room.fetch(true);
+	var overwrites = change([...room.permissionOverwrites.cache.values()].map(overwrite =>
+		({ id: overwrite.id, type: overwrite.type, allow: new PermissionsBitField(overwrite.allow), deny: new PermissionsBitField(overwrite.deny) })));
+	await room.permissionOverwrites.set(overwrites);
+	await updateEveryChannel([...room.children.cache.values()], channel =>
+		channel.permissionOverwrites.set(channel.type === ChannelType.GuildVoice ? overwrites.map(withVoiceChatDenied) : overwrites));
 }
 
-var addTeamsToRoom = async function(roles, to, channel) {
-	var promises = Array();
-	for(var i=0; i<roles.length; i++) {
-		var currRole = roles[i];
-		promises.push(addTeamToRoom(currRole, to));
-	}
-	await Promise.all(promises);
+// What .a and .t give a team in a room. readHistory is true only for a team's own lounge; competition rooms hide earlier messages.
+var teamRoomPermissions = function (readHistory) {
+	return new Map([
+		[PermissionFlagsBits.ViewChannel, true],
+		[PermissionFlagsBits.SendMessages, true],
+		[PermissionFlagsBits.Connect, true],
+		[PermissionFlagsBits.AddReactions, true],
+		[PermissionFlagsBits.ReadMessageHistory, readHistory],
+		[PermissionFlagsBits.Speak, true]
+	]);
 }
 
-// readHistory is true only for a team's own lounge; competition rooms hide earlier messages
-// The API doesn't pass category overwrite changes on to the channels, so always sync, even after a
-// failed edit: otherwise teams already changed in the category keep their old access to the channels.
+// Adds the teams to the room. Like permissionOverwrites.edit(), it sets only the permissions above
+// and keeps anything else a team's existing entry in the room allows or denies.
 var add = async function (roles, to, readHistory = false) {
-	try {
+	await rewriteRoom(to, function (overwrites) {
 		for (var role of roles) {
-			await to.permissionOverwrites.edit(role, {
-				ViewChannel: true,
-				SendMessages: true,
-				Connect: true,
-				AddReactions: true,
-				ReadMessageHistory: readHistory,
-				Speak: true
-			});
+			var overwrite = overwrites.find(overwrite => overwrite.id === role.id);
+			if (!overwrite) {
+				overwrite = { id: role.id, type: OverwriteType.Role, allow: new PermissionsBitField(), deny: new PermissionsBitField() };
+				overwrites.push(overwrite);
+			}
+			for (var [flag, allowed] of teamRoomPermissions(readHistory)) {
+				(allowed ? overwrite.allow : overwrite.deny).add(flag);
+				(allowed ? overwrite.deny : overwrite.allow).remove(flag);
+			}
 		}
-	} finally {
-		await syncRoom(to);
-	}
+		return overwrites;
+	});
 }
 
 var remove = async function (roles, from) {
-	try {
-		for (var role of roles) {
-			await from.permissionOverwrites.delete(role);
-		}
-	} finally {
-		await syncRoom(from);
-	}
+	var ids = roles.map(role => role.id);
+	await rewriteRoom(from, overwrites => overwrites.filter(overwrite => !ids.includes(overwrite.id)));
 }
 
 // Recolors each team with paint(role) and posts one summary
@@ -879,7 +871,6 @@ var init = async function (guild, commandChannel) {
 
 
   await (await guild.fetchOwner()).roles.add(controlRoomRole);
-  await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
   await guild.setSystemChannel(generalChannel);
 
 	var doneMessage = 'Server initialization is complete.';
@@ -1452,7 +1443,8 @@ var confirm = async function (message, prompt, force, failCallback, successCallb
 		var msg = await message.channel.send(fitConfirmPrompt(prompt));
 		msg.react('👍').catch(console.error);
 		const filter = (reaction, user) => reaction.emoji.name === '👍' && user.id === message.author.id;
-		var collected = await msg.awaitReactions({ filter, time: 6000 });
+		// max: 1 carries on as soon as the author reacts, rather than waiting out the whole 6 seconds
+		var collected = await msg.awaitReactions({ filter, max: 1, time: 6000 });
 		if (collected.size === 0) {
 			await runConfirmCallback(message, failCallback);
 		} else {
@@ -1498,7 +1490,7 @@ var voiceChatOpen = function (channel, everyoneId) {
 		overwrite.allow.any(VOICE_CHAT_PERMISSIONS) || !overwrite.deny.has(VOICE_CHAT_PERMISSIONS));
 }
 
-// What .a (addTeamToRoom) and createTeamLounge give a team. A team may read history only in its own lounge.
+// What .a (add) and createTeamLounge give a team. A team may read history only in its own lounge.
 const TEAM_PERMISSION_NAMES = new Map([
 	[PermissionFlagsBits.SendMessages, 'send messages'],
 	[PermissionFlagsBits.Connect, 'connect'],
@@ -1530,8 +1522,7 @@ var byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }
 // roomIds lists the competition rooms a problem concerns, so `.v #room` can show just that room's problems.
 // everyRoom marks a server-wide problem that makes every room's report unreliable (e.g. no Coach role, so no teams are found).
 var verifyServer = async function (guild) {
-	await guild.roles.fetch();
-	await guild.channels.fetch();
+	await Promise.all([guild.roles.fetch(), guild.channels.fetch()]);
 	var everyoneId = guild.roles.everyone.id;
 	var problems = [];
 	var problem = function (text, rooms = [], everyRoom = false) {
@@ -2003,26 +1994,18 @@ var processCommand = async function (command, message) {
 				await confirm(message, 'Are you sure you want to add team(s) ' + roleNames + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The addition is cancelled.');
 				}, async function () {
-					// Catch each edit, so a failure doesn't end the command (and let the next queued one start)
-					// while the other edits are still running, and so the teams that were added still get synced
-					var failed = [];
-					var failedError = null;
-					await Promise.all(roles.map(role => addTeamToRoom(role, to).catch(function (error) {
-						console.error('Could not add ' + role.name + ' to ' + to.name + ':', error);
-						failed.push(role);
-						failedError = failedError ?? error;
-					})));
-					var added = roles.filter(role => !failed.includes(role));
-					if (added.length > 0) {
-						await syncRoom(to);
-						// Names, not mentions: team roles are mentionable, so a mention would ping every member
-						await message.channel.send((added.length === 1 ? 'Team ' : 'Teams ') + listNamesForMessage(added.map(role => role.name), 'teams') +
-							(added.length === 1 ? ' has' : ' have') + ' been added to room "' + to.name + '."');
+					// One write per channel for all the teams together (see rewriteRoom)
+					try {
+						await add(roles, to);
+					} catch (error) {
+						console.error('Could not add ' + listNames(roles.map(role => role.name)) + ' to ' + to.name + ':', error);
+						await message.channel.send('Could not add ' + listNamesForMessage(roles.map(role => role.name), 'teams') + ' to room "' + to.name + '." ' +
+							(rateLimitMessage(error) ?? 'Check the room\'s permissions, or try again.'));
+						return;
 					}
-					if (failed.length > 0) {
-						await message.channel.send('Could not add ' + listNamesForMessage(failed.map(role => role.name), 'teams') + ' to room "' + to.name + '." ' +
-							(rateLimitMessage(failedError) ?? 'Check the room\'s permissions, or try again.'));
-					}
+					// Names, not mentions: team roles are mentionable, so a mention would ping every member
+					await message.channel.send((roles.length === 1 ? 'Team ' : 'Teams ') + listNamesForMessage(roles.map(role => role.name), 'teams') +
+						(roles.length === 1 ? ' has' : ' have') + ' been added to room "' + to.name + '."');
 				});
 			} catch (e) {
 				console.error(e);
