@@ -22,7 +22,7 @@ var helpSections = {
 	},
   'c': {
 		name: 'Create Room[s]',
-		value: 'This command can only be run by users with the Control Room role. Room names must be less than 90 characters long. Surround the room names with double quotation marks. If you want to create multiple rooms at a time, separate the room names with spaces. \nExample bot-style usage: `.c "Room 1" "Room 2"`\nExample NL-style usage: `.create "Room 1" "Room 2"`'
+		value: 'This command can only be run by users with the Control Room role. Room names must be less than 90 characters long, cannot contain "lounge", and cannot be "Control Room" or "Hub". Surround the room names with double quotation marks. If you want to create multiple rooms at a time, separate the room names with spaces. \nExample bot-style usage: `.c "Room 1" "Room 2"`\nExample NL-style usage: `.create "Room 1" "Room 2"`'
   },
   //'f': {
 	//name: 'Create Finals Room',
@@ -53,12 +53,12 @@ var helpSections = {
 		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to add.\nExample bot-style usage: `.a @A2 @A3 #room-1-text`\nExample NL-style usage: `.add @A2 @A3 to #room-1-text`'
   },
   'r': {
-		name: 'Remove Team from Room',
-		value: 'This command can be run by Control Room or Staff roles.\nExample bot-style usage: `.r @A2 #room-1-text`\nExample NL-style usage: `.remove @A2 from #room-1-text`'
+		name: 'Remove Team(s) from Room',
+		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles to remove.\nExample bot-style usage: `.r @A2 @A3 #room-1-text`\nExample NL-style usage: `.remove @A2 @A3 from #room-1-text`'
   },
   't': {
-		name: 'Transfer Team between Rooms',
-		value: 'This command can be run by Control Room or Staff roles. It requires you to tag two channels; tag the room that you are transferring the team __from__ first, and tag the channel that you are transferring the team __to__ second.\nExample bot-style usage: `.t @A2 #room-1-text #room-3-text`\nExample NL-style usage: `.transfer @A2 from #room-1-text to #room-3-text`'
+		name: 'Transfer Team(s) between Rooms',
+		value: 'This command can be run by Control Room or Staff roles. Specify one or more teams by their roles. It requires you to tag two channels; tag the room that you are transferring the teams __from__ first, and tag the channel that you are transferring the teams __to__ second.\nExample bot-style usage: `.t @A2 @A3 #room-1-text #room-3-text`\nExample NL-style usage: `.transfer @A2 @A3 from #room-1-text to #room-3-text`'
   },
   'e': {
 		name: 'Empty Room',
@@ -105,6 +105,9 @@ const MAX_NAME_LENGTH = 90;
 // from hasRole(), and empty() would never clear it out of a room.
 const RESERVED_ROLE_NAMES = ['@everyone', 'Control Room', 'Staff', 'Spectator', 'Coach'];
 
+// Categories that .a/.r/.t refuse to touch, so .c can't create rooms with these names (lowercase)
+const RESERVED_CATEGORY_NAMES = ['control room', 'hub'];
+
 var roleNameInUse = function (guild, name) {
 	var lower = name.toLowerCase();
 	return RESERVED_ROLE_NAMES.some(reserved => reserved.toLowerCase() === lower) ||
@@ -112,12 +115,30 @@ var roleNameInUse = function (guild, name) {
 }
 
 var lockPerms = async function (channel) {
-  // syncs channel's perms with its parent category
+  // syncs channel's perms with its parent category.
+  // lockPermissions() copies the category's *cached* overwrites, and permissionOverwrites.edit()/delete()
+  // don't update that cache (it waits for Discord's update event), so re-fetch the category first.
+  // Otherwise a team that was just removed can be copied right back onto the channels.
+  await channel.parent.fetch(true);
   await channel.lockPermissions();
-  //await channel.lockPermissions();
-  //await channel.lockPermissions();
-  //await channel.lockPermissions();
 	return Promise.resolve("Success");
+}
+
+// Copies a room category's permissions to its channels, then turns voice-channel chat back off.
+var syncRoom = async function (category) {
+	for(var [flake, channel] of category.children.cache) {
+		await lockPerms(channel);
+	}
+	await disableVoiceChannelChatInCategory(category);
+}
+
+// "A", "A and B", "A, B, and C"
+var listNames = function (items) {
+	var names = items.map(item => item.toString());
+	if (names.length <= 2) {
+		return names.join(' and ');
+	}
+	return names.slice(0, -1).join(', ') + ', and ' + names[names.length - 1];
 }
 
 const USERS_PATTERN = /<@!?(\d{17,19})>/;
@@ -300,49 +321,25 @@ var addTeamsToRoom = async function(roles, to, channel) {
 }
 
 // readHistory is true only for a team's own lounge; competition rooms hide earlier messages
-var add = async function (role, to, readHistory = false) {
-  await to.permissionOverwrites.edit(role, {
-		ViewChannel: true,
-		SendMessages: true,
-		Connect: true,
-		AddReactions: true,
-		ReadMessageHistory: readHistory,
-		Speak: true
-		//'USE_EXTERNAL_EMOJIS': true,
-		//'ATTACH_FILES': true,
-		//'EMBED_LINKS': true
-  });
-	for(var [flake, channel] of to.children.cache) {
-		await lockPerms(channel);
+var add = async function (roles, to, readHistory = false) {
+	for (var role of roles) {
+		await to.permissionOverwrites.edit(role, {
+			ViewChannel: true,
+			SendMessages: true,
+			Connect: true,
+			AddReactions: true,
+			ReadMessageHistory: readHistory,
+			Speak: true
+		});
 	}
-	await disableVoiceChannelChatInCategory(to);
-  //var children = to.children.array();
-  //await lockPerms(children[0]);
-  //await lockPerms(children[1]);
-  return role.toString();
+	await syncRoom(to);
 }
 
-var remove = async function (role, from) {
-  await from.permissionOverwrites.delete(role);
-	for(var [flake, channel] of from.children.cache) {
-		await lockPerms(channel);
+var remove = async function (roles, from) {
+	for (var role of roles) {
+		await from.permissionOverwrites.delete(role);
 	}
-	await disableVoiceChannelChatInCategory(from);
-	//edit(role, {
-	  //ViewChannel: false,
-		//SendMessages: false,
-		//Connect: false,
-		//AddReactions: false,
-		//ReadMessageHistory: false,
-		//Speak: false
-		//'USE_EXTERNAL_EMOJIS': false,
-		//'ATTACH_FILES': false,
-		//'EMBED_LINKS': false
-  //});
-  //var	children = from.children.array();
-  //await lockPerms(children[0]);
-  //await lockPerms(children[1]);
-  return;
+	await syncRoom(from);
 }
 
 var recolor = async function (role) {
@@ -356,6 +353,8 @@ var recolorTo = async function (role, color) {
 }
 
 var empty = async function (room) {
+	// refresh first, so a team added moments ago (whose update event hasn't arrived yet) is still removed
+	await room.fetch(true);
   var overwrites = room.permissionOverwrites.cache;
   for (var [flake, overwrite] of overwrites) {
 		var role = await room.guild.roles.fetch(overwrite.id);
@@ -371,16 +370,7 @@ var empty = async function (room) {
 	    await overwrite.delete();
 		}
   }
-	for(var [flake, channel] of room.children.cache) {
-		await lockPerms(channel);
-	}
-	await disableVoiceChannelChatInCategory(room);
-
-  //var children = room.children.array();
-  //await lockPerms(children[0]);
-  //await lockPerms(children[1]);
-  //await lockPerms(children[0]);
-  //await lockPerms(children[1]);
+	await syncRoom(room);
   return;
 }
 
@@ -403,6 +393,8 @@ var createRoom = async function (guild, name, staffSpectatorInvisible) {
   var cleanName = name.replace(/\s+/g, '-').toLowerCase();
   var text = await guild.channels.create({name: cleanName + '-text', parent: category});
   var voice = await guild.channels.create({name: cleanName + '-voice', parent: category, type: ChannelType.GuildVoice});
+	// a new voice channel's built-in chat is open to anyone who can see the room until this runs
+	await disableVoiceChannelChatInCategory(category);
   return text;
 }
 
@@ -908,7 +900,10 @@ var allowSpeakOverwrite = async function(guild, hallwayChannel, coachPos, overwr
 }
 
 var moveChannelAndSync = async function(destinationCategory, channel) {
-	await channel.setParent(destinationCategory);
+	// setParent's own permission sync reads the destination's cache, which can be stale (e.g. a
+	// just-created Lockdown Lounge with no overwrites yet, which would leave the lounge visible to
+	// everyone). Keep the current permissions while moving and let lockPerms sync from fresh data.
+	await channel.setParent(destinationCategory, { lockPermissions: false });
 	await lockPerms(channel);
 	return Promise.resolve("Success");
 }
@@ -1004,7 +999,17 @@ var unlockLounge = async function(guild, message) {
 	message.channel.send("--Removing voice channel chat permissions in hub . . .");
 	await disableVoiceChannelChatInCategory(hubCategory);
 
-	lockdownCategory.delete();
+	// Only delete the category if it's empty; anything left in it would lose its category
+	if (lockdownCategory.children.cache.size === 0) {
+		try {
+			await lockdownCategory.delete();
+		} catch (e) {
+			console.error(e);
+			message.channel.send('The lounge channels are back in Hub, but the "Lockdown Lounge" category could not be deleted. Please delete it manually.');
+		}
+	} else {
+		message.channel.send('The lounge channels are back in Hub. "Lockdown Lounge" still has other channels in it, so it was not deleted.');
+	}
 
 	//First unmodify hub
 	//{
@@ -1038,7 +1043,7 @@ var createTeam = async function (guild, name) {
 	//console.log("Adding role " + name + " to lounge " + loungeText.name);
 	// Teams can read their own lounge's history. This has to be set inside add(), before it copies
 	// the category's permissions to the channels; changing the category afterwards wouldn't reach them.
-	await add(teamRole, loungeText.parent, true);
+	await add([teamRole], loungeText.parent, true);
 	//console.log("Adding " + name + " to hub");
 	await addToHub(guild, teamRole);
 	//console.log("Added " + name + " to hub");
@@ -1213,14 +1218,7 @@ var processCommand = async function (command, message) {
 						}
 					}
 					await Promise.all(promises);
-					//sync all voice channels with category, then
-					// disable the chat channel in the voice channels
-					//I don't see a better way to do this.  I wish
-					// I could just disable voice channel chat.
-					for(var [flake, channel] of to.children.cache) {
-						await lockPerms(channel);
-					}
-					await disableVoiceChannelChatInCategory(to);
+					await syncRoom(to);
 				});
 			} catch (e) {
 				console.error(e);
@@ -1229,8 +1227,11 @@ var processCommand = async function (command, message) {
 		} else if (command.indexOf('.r') === 0) {
 			try {
 				var roles = mentions.roles;
-				var role = roles[0];
 				var channels = mentions.channels;
+				if(roles.length < 1 || channels.length < 1) {
+					message.channel.send('Tag at least one team and the text channel of the room to remove them from.');
+					throw 'Missing team or room for remove';
+				}
 				var from = channels[0].parent;
 				if(from.name == "Control Room" || from.name == "Hub") {
 					message.channel.send('Cannot add or remove from "' + from.name + '"');
@@ -1241,18 +1242,21 @@ var processCommand = async function (command, message) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
 					throw 'Coach role deleted';
 				}
-				if(role.position >= pos) {
-					message.channel.send('Cannot remove with non-team role ' + role.toString());
-					throw 'Cannot remove with non-team role ' + role.toString();
+				for(var role of roles) {
+					if(role.position >= pos) {
+						message.channel.send('Cannot remove with non-team role ' + role.toString());
+						throw 'Cannot remove with non-team role ' + role.toString();
+					}
 				}
-				await confirm(message, 'Are you sure you want to remove team ' + role.toString() + ' from room "' + from.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+				var roleNames = listNames(roles);
+				await confirm(message, 'Are you sure you want to remove team(s) ' + roleNames + ' from room "' + from.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The removal is cancelled.');
 				}, function	() {
-					return remove(role, from).then(function () {
-						message.channel.send('Team ' + role.toString() + ' has been removed from room "' + from.name + '."');
+					return remove(roles, from).then(function () {
+						message.channel.send('Team(s) ' + roleNames + ' removed from room "' + from.name + '."');
 					}).catch(function (error) {
 						console.error(error);
-						help(message.channel, ['r']);
+						message.channel.send('Could not remove team(s) ' + roleNames + ' from room "' + from.name + '." Check the room\'s permissions.');
 					});
 				});
 			} catch (e) {
@@ -1262,8 +1266,11 @@ var processCommand = async function (command, message) {
 		} else if (command.indexOf('.t') === 0) {
 			try {
 				var roles = mentions.roles;
-				var role = roles[0];
 				var channels = mentions.channels;
+				if(roles.length < 1 || channels.length < 2) {
+					message.channel.send('Tag at least one team, then the text channel of the room they are leaving, then the text channel of the room they are going to.');
+					throw 'Missing team or rooms for transfer';
+				}
 				var from = channels[0].parent;
 				var to = channels[1].parent;
 				if(to.name == "Control Room" || to.name == "Hub") {
@@ -1279,24 +1286,31 @@ var processCommand = async function (command, message) {
 					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles.');
 					throw 'Coach role deleted';
 				}
-				if(role.position >= pos) {
-					message.channel.send('Cannot transfer non-team role ' + role.toString());
-					throw 'Cannot transfer non-team role ' + role.toString();
+				for(var role of roles) {
+					if(role.position >= pos) {
+						message.channel.send('Cannot transfer non-team role ' + role.toString());
+						throw 'Cannot transfer non-team role ' + role.toString();
+					}
 				}
-				await confirm(message, 'Are you sure you want to transfer team ' + role.toString() + ' from room "' + from.name + '" to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+				var roleNames = listNames(roles);
+				await confirm(message, 'Are you sure you want to transfer team(s) ' + roleNames + ' from room "' + from.name + '" to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The transfer is cancelled.');
-				}, function	() {
-					return remove(role, from).then(function () {
-						return add(role, to).then(function () {
-							message.channel.send('Team ' + role.toString() + ' has been transferred from room "' + from.name + '" to room "' + to.name + '."');
-						}).catch(function (error) {
-							console.error(error);
-							help(message.channel, ['t']);
-						});
-					}).catch(function (error) {
+				}, async function	() {
+					try {
+						await remove(roles, from);
+					} catch (error) {
 						console.error(error);
-						help(message.channel, ['t']);
-					});
+						message.channel.send('Could not remove team(s) ' + roleNames + ' from room "' + from.name + '," so the transfer was stopped. Check the room\'s permissions.');
+						return;
+					}
+					try {
+						await add(roles, to);
+					} catch (error) {
+						console.error(error);
+						message.channel.send('Warning: team(s) ' + roleNames + ' were removed from room "' + from.name + '" but could not be added to room "' + to.name + '," so they are not in either room. Use `.a` to add them.');
+						return;
+					}
+					message.channel.send('Team(s) ' + roleNames + ' transferred from room "' + from.name + '" to room "' + to.name + '."');
 				});
 			} catch (e) {
 				console.error(e);
@@ -1423,6 +1437,12 @@ var processCommand = async function (command, message) {
 					// Discord caps channel names at 100 characters, and the text channel adds "-text"
 					if(name.length >= MAX_NAME_LENGTH) {
 						message.channel.send("Room names must be less than " + MAX_NAME_LENGTH + " characters long. The room name \"" + name + "\" is " + name.length + " characters.");
+						return;
+					}
+					// The bot finds these categories by name, and treats any channel with "lounge" in its name as a
+					// lounge (.w works there, and .l/.o move it), so rooms can't use them.
+					if(RESERVED_CATEGORY_NAMES.includes(name.trim().toLowerCase()) || /lounge/i.test(name)) {
+						message.channel.send("Room names cannot contain \"lounge\" or be \"Control Room\" or \"Hub\". The room name \"" + name + "\" doesn't meet these requirements.");
 						return;
 					}
 				}
