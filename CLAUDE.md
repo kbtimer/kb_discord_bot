@@ -23,7 +23,7 @@ Run with `PROFILE=1 node tournament.js` to log, after each command, its wall tim
 - **Editing many overwrites on one channel** (e.g. one PUT per team on Hub) hits an undocumented limit that returns 429s; write the whole list in one `permissionOverwrites.set()` (`addTeamsToHub`).
 - **Role creation is capped at 250 per server per ~48 hours.** Every team and every `.i` (4 roles) counts, so repeated full test rounds on one server exhaust it; use a fresh test server.
 - The client is built with `rejectOnRateLimit` for waits over `MAX_RATE_LIMIT_WAIT_MS` (60s), so long limits throw a `RateLimitError` instead of silently stalling; `rateLimitMessage()` explains it in Discord. Routine few-second waits are still waited out.
-- Batch commands post one start message, progress every `PROGRESS_INTERVAL_MS`, and one summary (`progressReporter`, `listNamesForMessage`) — not a message per item, since a channel takes only ~5 bot messages per 5 seconds. Use team **names**, not mentions, in bot messages: team roles are mentionable, so a mention pings every member.
+- Batch commands post one start message, progress every `PROGRESS_INTERVAL_MS`, and one summary (`progressReporter`, `listNamesForMessage`) — not a message per item, since a channel takes only ~5 bot messages per 5 seconds. Use team **names**, not mentions, in bot messages: team roles are mentionable, so a mention pings every member. As a backstop the client sets `allowedMentions: { parse: ['users'] }`, so role tags in bot messages render but never ping.
 
 ## Architecture
 
@@ -44,7 +44,7 @@ A **room** is a category containing `<name>-text` and `<name>-voice` (`createRoo
 
 `createRoom` and `createTeam` are all-or-nothing: on failure they delete what they already made (`rollBack`) and rethrow, attaching anything they couldn't delete as `error.leftovers`, which `.c`/`.n` report via `leftoversMessage`. `.c` refuses names matching an existing category, and `.n` refuses a name whose `<Team> Lounge` category already exists.
 
-A **team** (`createTeam`, the `.n` command) is a role with a random color, plus a private `<Team> Lounge` room, plus view access to the Hub. `.n` builds `TEAM_CREATION_CONCURRENCY` teams at a time, then grants Hub access to all of them in one call (`addTeamsToHub`) and runs `syncHubChannels`.
+A **team** (`createTeam`, the `.n` command) is a role with a random color, plus a private `<Team> Lounge` room, plus view access to the Hub. `.n` builds `TEAM_CREATION_CONCURRENCY` teams at a time, then grants Hub access to all of them in one call (`addTeamsToHub`) and runs `syncHubChannels`. A name that is already a finished team (`existingTeamRole`: a team role with its lounge) is skipped rather than rejected, and `addTeamsToHub` only adds overwrites for roles that lack one, so re-running a `.n` whose Hub step failed finishes its teams without undoing lockdown.
 
 **Lockdown and open lounge** (`.l`/`.o`): these move every channel whose name matches `/lounge/` between `Hub` and a `Lockdown Lounge` category and re-sync permissions.
 

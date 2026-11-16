@@ -11,6 +11,9 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds,
 																			GatewayIntentBits.MessageContent,
 																			GatewayIntentBits.GuildMessageReactions,
 																			GatewayIntentBits.GuildMembers],
+														// Team roles are mentionable, so a role mention in a bot message would ping every member.
+														// Only user mentions (.g/.u) ping; role tags still display.
+														allowedMentions: { parse: ['users'] },
 														rest: { rejectOnRateLimit: data => data.timeToReset > MAX_RATE_LIMIT_WAIT_MS } });
 const config = require("./config.json");
 
@@ -45,7 +48,7 @@ var helpSections = {
   },
 	'n': {
 		name: 'New Team[s]',
-		value: 'This command can only by run by users with the Control Room role.  Specify a list of teams names to create in double quotation marks, separated by spaces. Team names must be less than 90 characters long and cannot match a role that already exists (such as Staff or Coach).\nExample bot-style usage: `.n "AHS-A" "AHS-B" "BHS-A" "BHS-B"`\nExample NL-style usage: `.new-teams "AHS-A" "AHS-B" "BHS-A" "BHS-B"`'
+		value: 'This command can only by run by users with the Control Room role.  Specify a list of teams names to create in double quotation marks, separated by spaces. Team names must be less than 89 characters long and cannot match a role that already exists (such as Staff or Coach), except a team made by an earlier `.n`: that team is not created again, but it is given Hub access if it is missing, so a `.n` that failed partway can simply be run again.\nExample bot-style usage: `.n "AHS-A" "AHS-B" "BHS-A" "BHS-B"`\nExample NL-style usage: `.new-teams "AHS-A" "AHS-B" "BHS-A" "BHS-B"`'
 	},
   //'m': {
 	//	name: 'Mass Create Teams',
@@ -104,9 +107,10 @@ var hasRole = function (member, roleName) {
   return false;
 }
 
-// Room and team names must be shorter than this so that "<room>-text" and "<team>-lounge-text"
-// fit in Discord's 100-character channel name limit.
+// Room and team names must be shorter than these so that "<room>-text" (5 more characters) and
+// "<team>-lounge-text" (12 more) fit in Discord's 100-character channel name limit.
 const MAX_NAME_LENGTH = 90;
+const MAX_TEAM_NAME_LENGTH = 89;
 
 // Roles the bot finds by name. A team with one of these names would get that role's powers
 // from hasRole(), and empty() would never clear it out of a room.
@@ -127,6 +131,19 @@ var roleNameInUse = function (guild, name) {
 	var lower = name.toLowerCase();
 	return RESERVED_ROLE_NAMES.some(reserved => reserved.toLowerCase() === lower) ||
 		guild.roles.cache.some(role => role.name.toLowerCase() === lower);
+}
+
+// Returns the team role named `name` if .n already made it (a team role with its "<name> Lounge" category), else null.
+// A team role made by hand has no lounge, so it doesn't count.
+var existingTeamRole = function (guild, name, coachPos) {
+	var lower = name.toLowerCase();
+	var role = guild.roles.cache.find(r => r.name.toLowerCase() === lower);
+	if (!role || !isTeamRole(role, coachPos)) {
+		return null;
+	}
+	var loungeName = lower + ' lounge';
+	var hasLounge = guild.channels.cache.some(channel => channel.type === ChannelType.GuildCategory && channel.name.trim().toLowerCase() === loungeName);
+	return hasLounge ? role : null;
 }
 
 var lockPerms = async function (channel) {
@@ -441,8 +458,14 @@ var empty = async function (room) {
 	}).map(overwrite => ({ id: overwrite.id, type: overwrite.type, allow: overwrite.allow, deny: overwrite.deny }));
 	// The text channel gets exactly the category's overwrites, so it stays synced; the voice channel gets
 	// them with its built-in chat turned off (see disableVoiceChannelChatInCategory).
-	await Promise.all([room.permissionOverwrites.set(overwrites)].concat([...room.children.cache.values()].map(channel =>
+	// allSettled, not all: if one write fails, wait for the others before returning, or the next queued
+	// command could start while they're still changing this room
+	var results = await Promise.allSettled([room.permissionOverwrites.set(overwrites)].concat([...room.children.cache.values()].map(channel =>
 		channel.permissionOverwrites.set(channel.type === ChannelType.GuildVoice ? overwrites.map(withVoiceChatDenied) : overwrites))));
+	var failure = results.find(result => result.status === 'rejected');
+	if (failure) {
+		throw failure.reason;
+	}
 }
 
 // Permissions for a competition room's category: hidden from everyone except Staff and Spectators.
@@ -981,6 +1004,8 @@ var randomColor = function() {
 // Editing one channel's overwrites a role at a time runs into a Discord limit that discord.js can't
 // see coming (42 teams got six 429s and about 24 seconds of waiting), so this rewrites the whole list.
 // Follow with syncHubChannels so the Hub's channels pick up the change.
+// A role that already has a Hub overwrite keeps it (lockdown edits it), so this is safe to run again on
+// teams from an earlier .n.
 var addTeamsToHub = async function(guild, roles) {
 	if (roles.length === 0) {
 		return;
@@ -989,11 +1014,13 @@ var addTeamsToHub = async function(guild, roles) {
 	var hubCategory = generalChannel.parent;
 	// The cache can be stale (see lockPerms), and set() replaces everything, so start from Discord's copy
 	await hubCategory.fetch(true);
-	var roleIds = new Set(roles.map(role => role.id));
+	var missing = roles.filter(role => !hubCategory.permissionOverwrites.cache.has(role.id));
+	if (missing.length === 0) {
+		return;
+	}
 	var overwrites = [...hubCategory.permissionOverwrites.cache.values()]
-		.filter(overwrite => !roleIds.has(overwrite.id))
 		.map(overwrite => ({ id: overwrite.id, type: overwrite.type, allow: overwrite.allow, deny: overwrite.deny }));
-	for (var role of roles) {
+	for (var role of missing) {
 		overwrites.push({ id: role.id, type: OverwriteType.Role, allow: [
 			PermissionFlagsBits.ViewChannel,
 			PermissionFlagsBits.SendMessages,
@@ -1836,6 +1863,8 @@ var processCommand = async function (command, message) {
 						throw 'Not a competition room for delete';
 					}
 				}
+				// One channel per room: mentioning both of a room's channels, or one twice, would delete it twice at once
+				channels = [...new Map(channels.map(channel => [channel.parent.id, channel])).values()];
 				await confirm(message, 'Are you sure you want to delete the specified room[s]? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The deletion is cancelled.');
 				}, async function () {
@@ -1922,6 +1951,8 @@ var processCommand = async function (command, message) {
 					help(message.channel, ['b', 'n']);
 					return;
 				}
+				var coachPos = await coachPosition(message.guild);
+				var existingTeams = [];
 				for (var i = 1; i < names.length; i+= 2) {
 					var name = names[i];
 					var Exp = /[a-z0-9]/i;
@@ -1939,11 +1970,19 @@ var processCommand = async function (command, message) {
 						return;
 					}
 					// The lounge's text channel is "<name>-lounge-text", which must fit in Discord's 100 characters
-					if(name.length >= MAX_NAME_LENGTH) {
-						message.channel.send("Team names must be less than " + MAX_NAME_LENGTH + " characters long. The team name \"" + name + "\" is " + name.length + " characters.");
+					if(name.length >= MAX_TEAM_NAME_LENGTH) {
+						message.channel.send("Team names must be less than " + MAX_TEAM_NAME_LENGTH + " characters long. The team name \"" + name + "\" is " + name.length + " characters.");
 						return;
 					}
-					if(roleNameInUse(message.guild, name) || names.slice(1, i).some((other, j) => j % 2 === 0 && other.toLowerCase() === name.toLowerCase())) {
+					var duplicate = names.slice(1, i).some((other, j) => j % 2 === 0 && other.toLowerCase() === name.toLowerCase());
+					// A team from an earlier .n isn't created again, only given Hub access if it's missing,
+					// so a .n whose Hub step failed can be run again to finish its teams
+					var existingTeam = duplicate ? null : existingTeamRole(message.guild, name, coachPos);
+					if(existingTeam) {
+						existingTeams.push(existingTeam);
+						continue;
+					}
+					if(roleNameInUse(message.guild, name) || duplicate) {
 						message.channel.send("The team name \"" + name + "\" is already used by a role in this server, by a role the bot needs, or by another team in this command. No teams were created.");
 						return;
 					}
@@ -1959,14 +1998,20 @@ var processCommand = async function (command, message) {
 					message.channel.send('No confirmation was received. The new team creation is cancelled.');
 				}, async function () {
 					try {
-						var teamNames = names.filter((n, idx) => idx % 2 === 1);
+						var existingNames = existingTeams.map(role => role.name.toLowerCase());
+						var teamNames = names.filter((n, idx) => idx % 2 === 1 && !existingNames.includes(n.toLowerCase()));
+						if (existingTeams.length > 0) {
+							await message.channel.send(listNamesForMessage(existingTeams.map(role => role.name), 'teams') +
+								(existingTeams.length === 1 ? ' already exists' : ' already exist') + ', so ' + (existingTeams.length === 1 ? 'it' : 'they') +
+								' will not be created again, only given Hub access if missing.');
+						}
 						var created = [];
 						var createdRoles = [];
 						var failed = [];
 						var failReason = null;
 						var leftovers = [];
 						// Nothing else is posted until the teams are built, so say that work has started
-						await message.channel.send('Creating ' + teamNames.length + ' team' + (teamNames.length === 1 ? '' : 's') +
+						if (teamNames.length > 0) await message.channel.send('Creating ' + teamNames.length + ' team' + (teamNames.length === 1 ? '' : 's') +
 							'. Each team takes about a second; progress will be posted every ' + (PROGRESS_INTERVAL_MS / 1000) + ' seconds . . .');
 						var teamDone = progressReporter(message.channel, teamNames.length, done => 'Created ' + done + ' of ' + teamNames.length + ' teams');
 						await runWithConcurrency(teamNames, TEAM_CREATION_CONCURRENCY, async function (name) {
@@ -1984,7 +2029,7 @@ var processCommand = async function (command, message) {
 						// Report in the order the teams were listed, not the order they finished
 						created = teamNames.filter(n => created.includes(n));
 						failed = teamNames.filter(n => failed.includes(n));
-						await message.channel.send('Created ' + created.length + ' of ' + teamNames.length + ' teams' +
+						if (teamNames.length > 0) await message.channel.send('Created ' + created.length + ' of ' + teamNames.length + ' teams' +
 							(created.length > 0 ? ': ' + listNamesForMessage(created, 'teams') : '') + '.');
 						if (failed.length > 0) {
 							if (failReason) {
@@ -1998,10 +2043,22 @@ var processCommand = async function (command, message) {
 						// disable the chat channel in the voice channels
 						//I don't see a better way to do this.  I wish
 						// I could just disable voice channel chat.
+						var hubRoles = createdRoles.concat(existingTeams);
+						if (hubRoles.length === 0) {
+							return;
+						}
 						message.channel.send("Adjusting permissions in hub ...");
-						await addTeamsToHub(message.channel.guild, createdRoles);
-						var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
-						await syncHubChannels(generalChannel.parent);
+						try {
+							await addTeamsToHub(message.channel.guild, hubRoles);
+							var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
+							await syncHubChannels(generalChannel.parent);
+						} catch (error) {
+							console.error('Could not give teams Hub access:', error);
+							await message.channel.send('Could not finish giving ' + listNamesForMessage(hubRoles.map(role => role.name), 'teams') +
+								' access to the Hub. ' + (rateLimitMessage(error) ?? '') +
+								' Their roles and lounges exist; run the same `.n` command again to finish them.');
+							return;
+						}
 						message.channel.send("Done");
 					} catch (e) {
 						console.log(e.stack);
