@@ -37,7 +37,7 @@ var helpSections = {
   //},
   'd': {
 		name: 'Delete Room',
-		value: 'This command can only be run by users with the Control Room role.\nExample bot-style usage: `.d #room-1-text`\nExample NL-style usage: `.delete #room-1-text`'
+		value: 'This command can only be run by users with the Control Room role.  It deletes rooms made with `.c`; it will not delete lounges, Hub, or Control Room.\nExample bot-style usage: `.d #room-1-text`\nExample NL-style usage: `.delete #room-1-text`'
   },
   'b': {
 		name: 'Manually Create/Delete Team',
@@ -69,7 +69,7 @@ var helpSections = {
   },
   'e': {
 		name: 'Empty Room',
-		value: 'This command can only be run by users with the Control Room role.  It removes all teams from a given room.\nExample bot-style usage: `.e #room-1-text`\nExample NL-style usage: `.empty #room-1-text`'
+		value: 'This command can only be run by users with the Control Room role.  It removes all teams from a given room.  It will not empty lounges, Hub, or Control Room.\nExample bot-style usage: `.e #room-1-text`\nExample NL-style usage: `.empty #room-1-text`'
   },
 	'p': {
 		name: 'Paint a Team',
@@ -114,6 +114,14 @@ const RESERVED_ROLE_NAMES = ['@everyone', 'Control Room', 'Staff', 'Spectator', 
 
 // Categories that .a/.r/.t refuse to touch, so .c can't create rooms with these names (lowercase)
 const RESERVED_CATEGORY_NAMES = ['control room', 'hub'];
+
+// True if category is a room made by .c: two channels, and not Control Room, Hub, or a lounge (team lounges,
+// Coaches Lounge, Lockdown Lounge). Team lounges also have exactly two channels, so the name check matters.
+// .c refuses room names containing "lounge", so this never rejects a real room.
+var isCompetitionRoom = function (category) {
+	return !!category && category.type === ChannelType.GuildCategory && category.children.cache.size === 2 &&
+		!RESERVED_CATEGORY_NAMES.includes(category.name.toLowerCase()) && !/lounge/i.test(category.name);
+}
 
 var roleNameInUse = function (guild, name) {
 	var lower = name.toLowerCase();
@@ -1503,10 +1511,10 @@ var processCommand = async function (command, message) {
 					throw "empty empty.";
 				}
 				//check that they all look like competition rooms
-				for(var i=0; i<channels.length; i++) {
-					if(channels[i].parent.children.cache.size != 2) {
-						message.channel.send('"' + channels[i].parent.name + '" does not look like a competition room.');
-						throw 'too many channels in a category for empty';
+				for(var channel of channels) {
+					if(!isCompetitionRoom(channel?.parent)) {
+						message.channel.send((channel?.parent ? '"' + channel.parent.name + '"' : 'That channel') + ' is not a competition room. `.e` only empties rooms made with `.c`.');
+						throw 'Not a competition room for empty';
 					}
 				}
 				await confirm(message, 'Are you sure you want to empty the specified rooms? Confirm by reacting with \:thumbsup:.', force, function () {
@@ -1763,10 +1771,10 @@ var processCommand = async function (command, message) {
 					throw 'No channel mentions.'
 				}
 				//check that they all look like competition rooms
-				for(var i=0; i<channels.length; i++) {
-					if(channels[i].parent.children.cache.size != 2) {
-						message.channel.send('"' + channels[i].parent.name + '" does not look like a competition room.  Please delete it manually.');
-						throw 'too many channels in a category for delete';
+				for(var channel of channels) {
+					if(!isCompetitionRoom(channel?.parent)) {
+						message.channel.send((channel?.parent ? '"' + channel.parent.name + '"' : 'That channel') + ' is not a competition room. `.d` only deletes rooms made with `.c`; delete anything else manually.');
+						throw 'Not a competition room for delete';
 					}
 				}
 				await confirm(message, 'Are you sure you want to delete the specified room[s]? Confirm by reacting with \:thumbsup:.', force, function () {
