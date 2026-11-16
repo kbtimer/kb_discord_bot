@@ -539,13 +539,22 @@ var leftoversMessage = function (leftovers) {
 		listNamesForMessage(leftovers, 'roles and channels') + '.';
 }
 
+// On failure, error.leftovers names what is still there. Once one channel is gone the room no longer passes
+// isCompetitionRoom (or has no text channel to mention), so .d can't be retried and the rest must go by hand.
 var deleteRoom = async function (text) {
   var category = text.parent;
   var name = category.name;
-  for (var [flake, channel] of category.children.cache) {
-		await channel.delete();
+  try {
+    for (var [flake, channel] of category.children.cache) {
+      await channel.delete();
+    }
+    await category.delete();
+  } catch (error) {
+    // children is read from the guild's channel cache, which drops each channel as it's deleted
+    var remaining = [...category.children.cache.values()].map(channel => '#' + channel.name);
+    error.leftovers = [...remaining, 'category "' + name + '"'];
+    throw error;
   }
-  await category.delete();
   return name;
 }
 
@@ -1422,12 +1431,12 @@ var processCommand = async function (command, message) {
 
 		//console.log("Is Control Room or Staff");
 
-		// var force = command.indexOf('--force') >= 0 ? 1 : 0;
-		var force = false;
-		var forceIndex = command.indexOf('--force');
-		if (forceIndex > -1) {
-			force = true;
-			command = command.replace('--force', '');
+		// --force counts only as a separate word at the end of the line (as the help says), so a name
+		// containing it, like .c "Room--force", doesn't silently skip confirmation
+		var forcePattern = /\s--force\s*$/;
+		var force = forcePattern.test(command);
+		if (force) {
+			command = command.replace(forcePattern, '');
 		}
 
 
@@ -1898,6 +1907,7 @@ var processCommand = async function (command, message) {
 					// Indexes, not names: older servers can have two rooms with the same name
 					var failedIndexes = new Set();
 					var failedError = null;
+					var leftovers = [];
 					if (channels.length > 1) {
 						await message.channel.send('Deleting ' + channels.length + ' rooms . . .');
 					}
@@ -1907,6 +1917,7 @@ var processCommand = async function (command, message) {
 							console.error(error);
 							failedIndexes.add(i);
 							failedError = failedError ?? error;
+							leftovers.push(...(error.leftovers ?? []));
 						}).finally(roomDone);
 					}));
 					var deleted = roomNames.filter((name, i) => !failedIndexes.has(i));
@@ -1916,8 +1927,11 @@ var processCommand = async function (command, message) {
 							(deleted.length === 1 ? ' has' : ' have') + ' been deleted.');
 					}
 					if (failed.length > 0) {
+						// A partly deleted room can't be retried with .d, so say exactly what is left to delete by hand
 						await message.channel.send('Could not delete ' + listNamesForMessage(failed, 'rooms') + '. ' +
-							(rateLimitMessage(failedError) ?? 'Please delete them manually.'));
+							(rateLimitMessage(failedError) ?? '') +
+							(leftovers.length > 0 ? '\nThese were not deleted; please delete them by hand (`.d` can\'t retry a partly deleted room): ' +
+								listNamesForMessage(leftovers, 'channels and categories') + '.' : ''));
 						help(message.channel, ['d']);
 					}
 				});
@@ -1976,7 +1990,12 @@ var processCommand = async function (command, message) {
 					help(message.channel, ['b', 'n']);
 					return;
 				}
+				// Team roles are told apart by sitting below Coach; without it, new teams would be refused by .a/.r/.t/.p
 				var coachPos = await coachPosition(message.guild);
+				if(coachPos < 0) {
+					message.channel.send('The Coach role has been deleted.  There must be a Coach role directly above the team roles. No teams were created.');
+					return;
+				}
 				var existingTeams = [];
 				for (var i = 1; i < names.length; i+= 2) {
 					var name = names[i];
