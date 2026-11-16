@@ -38,7 +38,7 @@ var helpSections = {
   },
 	'n': {
 		name: 'New Team[s]',
-		value: 'This command can only by run by users with the Control Room role.  Specify a list of teams names to create in double quotation marks, separated by spaces.\nExample bot-style usage: `.n "AHS-A" "AHS-B" "BHS-A" "BHS-B"`\nExample NL-style usage: `.new-teams "AHS-A" "AHS-B" "BHS-A" "BHS-B"`'
+		value: 'This command can only by run by users with the Control Room role.  Specify a list of teams names to create in double quotation marks, separated by spaces. Team names must be less than 90 characters long and cannot match a role that already exists (such as Staff or Coach).\nExample bot-style usage: `.n "AHS-A" "AHS-B" "BHS-A" "BHS-B"`\nExample NL-style usage: `.new-teams "AHS-A" "AHS-B" "BHS-A" "BHS-B"`'
 	},
   //'m': {
 	//	name: 'Mass Create Teams',
@@ -97,6 +97,20 @@ var hasRole = function (member, roleName) {
   return false;
 }
 
+// Room and team names must be shorter than this so that "<room>-text" and "<team>-lounge-text"
+// fit in Discord's 100-character channel name limit.
+const MAX_NAME_LENGTH = 90;
+
+// Roles the bot finds by name. A team with one of these names would get that role's powers
+// from hasRole(), and empty() would never clear it out of a room.
+const RESERVED_ROLE_NAMES = ['@everyone', 'Control Room', 'Staff', 'Spectator', 'Coach'];
+
+var roleNameInUse = function (guild, name) {
+	var lower = name.toLowerCase();
+	return RESERVED_ROLE_NAMES.some(reserved => reserved.toLowerCase() === lower) ||
+		guild.roles.cache.some(role => role.name.toLowerCase() === lower);
+}
+
 var lockPerms = async function (channel) {
   // syncs channel's perms with its parent category
   await channel.lockPermissions();
@@ -129,7 +143,7 @@ function getRoleIDFromMention(mention) {
 	return id;
 }
 
-var getMentions = function (content, guild) {
+var getMentions = async function (content, guild) {
   var splitOnSpaces = content.split(/\s+/);
   var mentions = {
     roles: [],
@@ -139,8 +153,12 @@ var getMentions = function (content, guild) {
   for (var substr of splitOnSpaces) {
 		var id = false;
 		if(id = getUserIDFromMention(substr)) {
-			//console.log("ID: " + id + "\n");
-			mentions.users.push(guild.members.resolve(id));
+			// fetch, not resolve: members aren't all cached, and resolve only checks the cache.
+			// Mentions of people who aren't in the server are skipped.
+			var member = await guild.members.fetch(id).catch(() => null);
+			if(member) {
+				mentions.users.push(member);
+			}
 		} else if (id = getRoleIDFromMention(substr)) {
 			mentions.roles.push(guild.roles.resolve(id));
 		} else if (id = getChannelIDFromMention(substr)) {
@@ -202,6 +220,8 @@ var disableVoiceChannelChatInCategory = async function(category) {
 												 PermissionFlagsBits.ReadMessageHistory]);
 				newPerms.push({
 					id: overwrite.id,
+					// without type, discord.js must look the id up in its cache, and throws for uncached users
+					type: overwrite.type,
 					allow: allow,
 					deny: deny
 				});
@@ -240,6 +260,17 @@ var syncVoiceChannelsToCategory = async function(category) {
 	await Promise.all(promises);
 }
 
+// Copies the Hub category's permissions to its channels, then turns voice-channel chat back off.
+// general and announcements are skipped because they have their own @everyone permissions on purpose.
+var syncHubChannels = async function(hubCategory) {
+	for(var [flake, channel] of hubCategory.children.cache) {
+		if (channel.name !== 'general' && channel.name !== 'announcements') {
+			await lockPerms(channel);
+		}
+	}
+	await disableVoiceChannelChatInCategory(hubCategory);
+}
+
 //Does not fix voice channel permissions
 var addTeamToRoom = async function(role, to, channel) {
   await to.permissionOverwrites.edit(role, {
@@ -268,13 +299,14 @@ var addTeamsToRoom = async function(roles, to, channel) {
 	await Promise.all(promises);
 }
 
-var add = async function (role, to) {
+// readHistory is true only for a team's own lounge; competition rooms hide earlier messages
+var add = async function (role, to, readHistory = false) {
   await to.permissionOverwrites.edit(role, {
 		ViewChannel: true,
 		SendMessages: true,
 		Connect: true,
 		AddReactions: true,
-		ReadMessageHistory: false,
+		ReadMessageHistory: readHistory,
 		Speak: true
 		//'USE_EXTERNAL_EMOJIS': true,
 		//'ATTACH_FILES': true,
@@ -384,26 +416,76 @@ var deleteRoom = async function (text) {
   return name;
 }
 
-var init = async function (guild) {
+// How often init posts "deleted X of Y" updates while it clears out the server
+const INIT_PROGRESS_INTERVAL_MS = 5000;
+
+var init = async function (guild, commandChannel) {
   // basic setup of the tournament server
-	//console.log("In init");
-  await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
-	//console.log("In init 2");
-  var existingRoles = guild.roles.cache;
-  for (var [flake, role] of existingRoles) {
-		if (role.name !== '@everyone' && role.name !== 'CKB Bot' && role.name !== 'ckbbot' && role.name !== 'Server Booster' && role.name !== 'Test CKB Bot Local') {
-	    try {
-				await role.delete();
-	    } catch (e) {
-				console.error('could not delete role: ' + role.name);
-				console.error(e);
-	    }
+
+	// Progress goes to the channel the command came from for as long as that channel exists.
+	// It's deleted last, and the final result is posted in the new #bot-commands.
+	var say = async function (text) {
+		if (commandChannel && guild.channels.cache.has(commandChannel.id)) {
+			await commandChannel.send(text).catch(console.error);
 		}
-  } // empty out existing roles so the correct ones can take their place
-  existingChannels = guild.channels.cache;
-  for (var [flake, channel] of existingChannels) {
-		await channel.delete();
+	};
+	var lastProgress = Date.now();
+	var progress = async function (text) {
+		if (Date.now() - lastProgress >= INIT_PROGRESS_INTERVAL_MS) {
+			lastProgress = Date.now();
+			await say(text);
+		}
+	};
+
+  await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
+
+	// empty out existing roles so the correct ones can take their place.
+	// Managed roles (bots, Server Booster) can't be deleted, so don't try.
+	var keptRoleNames = ['CKB Bot', 'ckbbot', 'Server Booster', 'Test CKB Bot Local'];
+	var rolesToDelete = [...guild.roles.cache.values()].filter(role =>
+		role.id !== guild.id && !role.managed && !keptRoleNames.includes(role.name));
+	var channelsToDelete = [...guild.channels.cache.values()];
+	channelsToDelete.sort((a, b) => (a.id === commandChannel?.id) - (b.id === commandChannel?.id));
+
+	await say('Initializing the server: deleting ' + rolesToDelete.length + ' roles and ' + channelsToDelete.length +
+						' channels, then building the tournament layout. On a big server this can take several minutes; ' +
+						'progress will be posted here until this channel is deleted.');
+
+	var rolesDeleted = 0;
+	var rolesFailed = 0;
+	for (var role of rolesToDelete) {
+    try {
+			await role.delete();
+			rolesDeleted++;
+    } catch (e) {
+			rolesFailed++;
+			console.error('could not delete role: ' + role.name);
+			console.error(e);
+    }
+		await progress('Deleted ' + rolesDeleted + ' of ' + rolesToDelete.length + ' roles . . .');
   }
+	await say('Deleted ' + rolesDeleted + ' of ' + rolesToDelete.length + ' roles. Deleting channels . . .');
+
+	var channelsDeleted = 0;
+	var channelsFailed = 0;
+  for (var channel of channelsToDelete) {
+		if (channel.id === commandChannel?.id) {
+			await say('Deleted ' + channelsDeleted + ' of ' + channelsToDelete.length + ' channels. Deleting this channel now; ' +
+								'the result will be posted in the new #bot-commands.');
+		}
+		// Some channels can't be deleted (e.g. a Community server's rules/updates channels);
+		// skip them instead of aborting init with the roles already gone.
+		try {
+			await channel.delete();
+			channelsDeleted++;
+		} catch (e) {
+			channelsFailed++;
+			console.error('could not delete channel: ' + channel.name);
+			console.error(e);
+		}
+		await progress('Deleted ' + channelsDeleted + ' of ' + channelsToDelete.length + ' channels . . .');
+  }
+	await say('Building the tournament roles and channels . . .');
 	const basePermissions = [PermissionFlagsBits.ChangeNickname,
 													 PermissionFlagsBits.ViewChannel,
 													 PermissionFlagsBits.SendMessages,
@@ -422,7 +504,7 @@ var init = async function (guild) {
 																			 PermissionFlagsBits.ManageNicknames,
 																			 PermissionFlagsBits.MoveMembers]);
 	const coachPermissions = staffPermissions;
-	guild.roles.everyone.setPermissions(basePermissions);
+	await guild.roles.everyone.setPermissions(basePermissions);
   var controlRoomRole = await guild.roles.create({
 	  name: 'Control Room',
 	  colors: { primaryColor: Colors.Purple },
@@ -485,7 +567,7 @@ var init = async function (guild) {
   var readerRoomChannel = await guild.channels.create({name: 'reader-room', parent: controlRoomCategory});
   var readerRoomVoiceChannel = await guild.channels.create({name: 'reader-room-voice', parent: controlRoomCategory, type: ChannelType.GuildVoice});
   var readerRoomVoice2Channel = await guild.channels.create({name: 'reader-room-voice-2', parent: controlRoomCategory, type: ChannelType.GuildVoice});
-	disableVoiceChannelChatInCategory(controlRoomCategory);
+	await disableVoiceChannelChatInCategory(controlRoomCategory);
 
 
 	//Hub is where students get announcements and interact with each other
@@ -514,7 +596,7 @@ var init = async function (guild) {
 		ReadMessageHistory: true,
 		AddReactions: false
   });
-  announcementsChannel.send(guild.name + ' is committed to ensuring that Knowledge Bowl is safe, open, and welcoming for everyone. If anyone at this tournament makes you feel unsafe or unwelcome, please do not hesitate to reach out to anyone with the ' + controlRoomRole.toString() + ' or ' + staffRole.toString() + ' roles.');
+  await announcementsChannel.send(guild.name + ' is committed to ensuring that Knowledge Bowl is safe, open, and welcoming for everyone. If anyone at this tournament makes you feel unsafe or unwelcome, please do not hesitate to reach out to anyone with the ' + controlRoomRole.toString() + ' or ' + staffRole.toString() + ' roles.');
 
 	//general channel won't be synced with hub category
 	//  so that @everyone can read and write it
@@ -524,13 +606,13 @@ var init = async function (guild) {
 		ViewChannel: true,
 		AddReactions: false
   });
-	generalChannel.setRateLimitPerUser(3);
+	await generalChannel.setRateLimitPerUser(3);
 
 
   var hallwayVoiceChannel = await guild.channels.create({name: 'hallway-voice', parent: hubCategory, type: ChannelType.GuildVoice});
 	//make some lounge channels for people to talk to each other
 	var loungeChannel = await guild.channels.create({name: 'lounge-text', parent: hubCategory});
-	loungeChannel.setRateLimitPerUser(10);
+	await loungeChannel.setRateLimitPerUser(10);
 	var loungeVoiceChannel1 = await guild.channels.create({name: 'lounge-voice-1', parent: hubCategory, type: ChannelType.GuildVoice});
 	var loungeVoiceChannel2 = await guild.channels.create({name: 'lounge-voice-2', parent: hubCategory, type: ChannelType.GuildVoice});
 	var loungeVoiceChannel3 = await guild.channels.create({name: 'lounge-voice-3', parent: hubCategory, type: ChannelType.GuildVoice});
@@ -538,7 +620,7 @@ var init = async function (guild) {
 	//Voice channels won't be synced, either, so that I can
 	// disable the text chat on them.  So they'll be regularly synced,
 	// then disabled over and over and over because . . . Discord.
-	disableVoiceChannelChatInCategory(hubCategory);
+	await disableVoiceChannelChatInCategory(hubCategory);
 
 
 	//Make a lounge for coaches to talk to each other
@@ -556,12 +638,20 @@ var init = async function (guild) {
 	var coachVoiceChannel1 = await guild.channels.create({name: 'coaches-voice-1', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
 	var coachVoiceChannel2 = await guild.channels.create({name: 'coaches-voice-2', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
 	var coachVoiceChannel3 = await guild.channels.create({name: 'coaches-voice-3', parent: coachesLoungeCategory, type: ChannelType.GuildVoice});
-	disableVoiceChannelChatInCategory(coachesLoungeCategory);
+	await disableVoiceChannelChatInCategory(coachesLoungeCategory);
 
 
   await (await guild.fetchOwner()).roles.add(controlRoomRole);
   await guild.setDefaultMessageNotifications(GuildDefaultMessageNotifications.OnlyMentions);
   await guild.setSystemChannel(generalChannel);
+
+	var doneMessage = 'Server initialization is complete.';
+	if (rolesFailed || channelsFailed) {
+		doneMessage += ' ' + rolesFailed + ' old role(s) and ' + channelsFailed +
+			' old channel(s) could not be deleted; check the bot console and remove them by hand if needed.';
+	}
+	await botCommandsChannel.send(doneMessage).catch(console.error);
+	await say(doneMessage); // only if the original channel survived (it couldn't be deleted)
 }
 
 var help = function (channel, sections) {
@@ -759,7 +849,7 @@ var randomColor = function() {
 	//Make a color in hsl and convert to rgb
 	//Maintain a minimum brightness and avoid colors with hues
 	//  between 240 and 0, since those are for staff/admin
-	var h = Math.random();//Math.pow(Math.random()*2.0 - 1.0, 1.0/3.0)/3.0 + 1.0/3.0;
+	var h = Math.random() * 240 / 360;
 	var s = Math.random()*0.6 + 0.3;
 	var v = Math.random()*0.25 + 0.75;
 	var color = hsvToRgb2(h, s, v);
@@ -830,7 +920,8 @@ var lockdownLounge = async function(guild, message) {
 	if(!lockdownCategory) {
 		lockdownCategory = await guild.channels.create({name: 'Lockdown Lounge',
 																										type: ChannelType.GuildCategory});
-		lockdownCategory.permissionOverwrites.edit(guild.roles.everyone, {
+		// await so the channels moved in below copy this deny, not an empty overwrite list
+		await lockdownCategory.permissionOverwrites.edit(guild.roles.everyone, {
 			ViewChannel: false
 		});
 	}
@@ -945,15 +1036,9 @@ var createTeam = async function (guild, name) {
 	var loungeText = await createRoom(guild, name + ' Lounge', true);
 	//console.log("Created lounge " + name + " Lounge");
 	//console.log("Adding role " + name + " to lounge " + loungeText.name);
-	await add(teamRole, loungeText.parent);
-	//await add(teamRole, loungeText.parent);
-	//console.log("Added role " + name + " to lounge " + loungeText.name);
-	//Overwrite default READ_MESSAGE_HISTORY from add function
-	//console.log("updating read_message_history for " + name);
-	await loungeText.parent.permissionOverwrites.edit(teamRole, {
-		ReadMessageHistory: true
-	});
-	//console.log("updated read_message_history for " + name);
+	// Teams can read their own lounge's history. This has to be set inside add(), before it copies
+	// the category's permissions to the channels; changing the category afterwards wouldn't reach them.
+	await add(teamRole, loungeText.parent, true);
 	//console.log("Adding " + name + " to hub");
 	await addToHub(guild, teamRole);
 	//console.log("Added " + name + " to hub");
@@ -970,14 +1055,14 @@ var massCreateTeams = async function (guild, prefix, startIndex, endIndex) {
 	// disable the chat channel in the voice channels
 	//I don't see a better way to do this.  I wish
 	// I could just disable voice channel chat.
-	await syncVoiceChannelsToCategory(generalChannel.parent);
-	disableVoiceChannelChatInCategory(generalChannel.parent);
+	var generalChannel = guild.channels.cache.find(channel => channel.name === "general");
+	await syncHubChannels(generalChannel.parent);
 
   return;
 }
 
 var setGuildBitrate = async function (bitrate, guild) {
-  for (var channel of guild.channels.cache.array()) {
+  for (var channel of guild.channels.cache.values()) {
 		if (channel.type === ChannelType.GuildVoice) {
 	    await channel.setBitrate(bitrate * 1000);
 			//	    console.log('set bitrate for ' + channel.name);
@@ -986,28 +1071,39 @@ var setGuildBitrate = async function (bitrate, guild) {
   return;
 }
 
+// Runs a confirm callback and reports any failure in the channel. Callers don't await
+// confirm(), so without this an error in an async callback would only reach the console.
+var runConfirmCallback = async function (message, callback) {
+	try {
+		await callback();
+	} catch (e) {
+		console.error(e);
+		message.channel.send('Something went wrong while running that command; check the bot console for details.').catch(console.error);
+	}
+}
+
 var confirm = async function (message, prompt, force, failCallback, successCallback) {
-  if (force) {
+	try {
+		if (force) {
+			message.react('👍').catch(console.error);
+			await runConfirmCallback(message, successCallback);
+			return;
+		}
 
-		message.react('👍');
-		successCallback();
-		return;
-  }
-
-  message.channel.send(prompt).then(function (msg) {
-		msg.react('👍');
-		//console.log("Waiting for reactions");
-		//console.log("Looking for reactions where user id is " + message.author.id);
+		var msg = await message.channel.send(prompt);
+		msg.react('👍').catch(console.error);
 		const filter = (reaction, user) => reaction.emoji.name === '👍' && user.id === message.author.id;
-		msg.awaitReactions({ filter, time: 6000 })
-			.then(function (collected) {
-	    if (collected.size === 0) {
-				failCallback();
-	    } else {
-				successCallback();
-	    }
-		}).catch(console.error);
-  });
+		var collected = await msg.awaitReactions({ filter, time: 6000 });
+		if (collected.size === 0) {
+			await runConfirmCallback(message, failCallback);
+		} else {
+			await runConfirmCallback(message, successCallback);
+		}
+	} catch (e) {
+		// sending the prompt or waiting for reactions failed
+		console.error(e);
+		message.channel.send('Could not ask for confirmation, so the command was not run.').catch(console.error);
+	}
 }
 
 var processCommand = async function (command, message) {
@@ -1043,9 +1139,11 @@ var processCommand = async function (command, message) {
 
 		var channelName = message.channel.name;
 
-		var teamName = channelName.substring(0, channelName.indexOf("-lounge"));
+		// Team lounges are named "<team>-lounge-text"; the public "lounge-text" has no team name
+		var loungeIndex = channelName.indexOf("-lounge");
+		var greeting = loungeIndex > 0 ? 'Hello ' + channelName.substring(0, loungeIndex) + '!' : 'Hello!';
 
-		message.channel.send('Hello ' + teamName + "! Your secret code for today's written is " + code);
+		message.channel.send(greeting + " Your secret code for today's written is " + code);
 
 	} else if(command.indexOf('.') === 0 && (hasRole(message.member, 'Control Room') || hasRole(message.member, 'Staff') || message.author.id === message.guild.ownerId)) {
 
@@ -1062,7 +1160,7 @@ var processCommand = async function (command, message) {
 
 		//If we're here, we know that the caller is Control Room, Staff, or owner, so if all of those can
 		//  call a command, we don't have to bother checking roles
-		var mentions = getMentions(command, message.guild);
+		var mentions = await getMentions(command, message.guild);
 		if (command.indexOf('.a') === 0) {
 			try {
 				var roles = mentions.roles;
@@ -1101,7 +1199,7 @@ var processCommand = async function (command, message) {
 					}
 					roleNames += " and " + roles[roles.length-1].toString();
 				}
-				confirm(message, 'Are you sure you want to add team(s) ' + roleNames + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+				await confirm(message, 'Are you sure you want to add team(s) ' + roleNames + ' to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The addition is cancelled.');
 				}, async function () {
 					var promises = Array();
@@ -1147,10 +1245,10 @@ var processCommand = async function (command, message) {
 					message.channel.send('Cannot remove with non-team role ' + role.toString());
 					throw 'Cannot remove with non-team role ' + role.toString();
 				}
-				confirm(message, 'Are you sure you want to remove team ' + role.toString() + ' from room "' + from.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+				await confirm(message, 'Are you sure you want to remove team ' + role.toString() + ' from room "' + from.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The removal is cancelled.');
 				}, function	() {
-					remove(role, from).then(function () {
+					return remove(role, from).then(function () {
 						message.channel.send('Team ' + role.toString() + ' has been removed from room "' + from.name + '."');
 					}).catch(function (error) {
 						console.error(error);
@@ -1185,11 +1283,11 @@ var processCommand = async function (command, message) {
 					message.channel.send('Cannot transfer non-team role ' + role.toString());
 					throw 'Cannot transfer non-team role ' + role.toString();
 				}
-				confirm(message, 'Are you sure you want to transfer team ' + role.toString() + ' from room "' + from.name + '" to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
+				await confirm(message, 'Are you sure you want to transfer team ' + role.toString() + ' from room "' + from.name + '" to room "' + to.name + '"? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The transfer is cancelled.');
 				}, function	() {
-					remove(role, from).then(function () {
-						add(role, to).then(function () {
+					return remove(role, from).then(function () {
+						return add(role, to).then(function () {
 							message.channel.send('Team ' + role.toString() + ' has been transferred from room "' + from.name + '" to room "' + to.name + '."');
 						}).catch(function (error) {
 							console.error(error);
@@ -1218,10 +1316,10 @@ var processCommand = async function (command, message) {
 					}
 				}
 				var clearChannel = function (index) {
-					empty(channels[index].parent).then(function () {
+					return empty(channels[index].parent).then(function () {
 						message.channel.send('Emptied room "' + channels[index].parent.name + '."');
 						if (index < channels.length - 1) {
-							clearChannel(index + 1);
+							return clearChannel(index + 1);
 						} else {
 							message.channel.send('All specified rooms emptied.');
 						}
@@ -1230,10 +1328,10 @@ var processCommand = async function (command, message) {
 						message.channel.send('Could not empty room "' + channels[index].parent.name + '". Stopping; later rooms were not emptied.');
 					});
 				}
-				confirm(message, 'Are you sure you want to empty the specified rooms? Confirm by reacting with \:thumbsup:.', force, function () {
+				await confirm(message, 'Are you sure you want to empty the specified rooms? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. No rooms were emptied.');
 				}, function () {
-					clearChannel(0);
+					return clearChannel(0);
 				});
 			} catch (e) {
 				console.error(e);
@@ -1243,12 +1341,19 @@ var processCommand = async function (command, message) {
 			if(command.indexOf(message.channel.guild.name) < 0) {
 				help(message.channel, ['i']);
 			} else {
-				confirm(message, 'Are you sure you want to initialize the server ' + message.channel.guild.name + '? Every channel and role currently in the server will be deleted. Confirm by reacting with \:thumbsup:.', force, function () {
+				await confirm(message, 'Are you sure you want to initialize the server ' + message.channel.guild.name + '? Every channel and role currently in the server will be deleted. Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The initialization is cancelled.');
 				}, function () {
-					init(message.channel.guild, message.channel).catch(function (e) {
+					var guild = message.channel.guild;
+					return init(guild, message.channel).catch(function (e) {
 						console.error(e);
-						help(message.channel, ['i']);
+						// init may have deleted the channel the command came from
+						var reportChannel = guild.channels.cache.has(message.channel.id) ? message.channel :
+								guild.channels.cache.find(channel => channel.name === 'bot-commands');
+						if (reportChannel) {
+							reportChannel.send('Initialization failed partway through; check the bot console for details.').catch(console.error);
+							help(reportChannel, ['i']);
+						}
 					});
 				});
 			}
@@ -1315,20 +1420,27 @@ var processCommand = async function (command, message) {
 						message.channel.send("Room names can only have letters, numbers, spaces, hyphens, periods, and underscores, but no other special characters.\nThe room name \"" + name + "\" doesn't meet these requirements.");
 						return;
 					}
+					// Discord caps channel names at 100 characters, and the text channel adds "-text"
+					if(name.length >= MAX_NAME_LENGTH) {
+						message.channel.send("Room names must be less than " + MAX_NAME_LENGTH + " characters long. The room name \"" + name + "\" is " + name.length + " characters.");
+						return;
+					}
 				}
-				confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
+				await confirm(message, 'Are you sure you want to create the room[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The creation is cancelled.');
 				}, function () {
+					var promises = [];
 					for (let i = 1; i < names.length; i += 2) {
 						let name = names[i];
-						createRoom(message.channel.guild, name).then(function (textChannel) {
+						promises.push(createRoom(message.channel.guild, name).then(function (textChannel) {
 							message.channel.send('Room "' + textChannel.parent.name + '" has been created.');
 						}).catch(function (error) {
 							console.error(error);
 							message.channel.send('Could not create room "' + name + '". Please try using a different name.');
 							help(message.channel, ['c']);
-						});
+						}));
 					}
+					return Promise.all(promises);
 				});
 			} catch (e) {
 				console.error(e);
@@ -1392,32 +1504,30 @@ var processCommand = async function (command, message) {
 				var matches = command.match(/\#[A-F0-9]{6}/i);
 				if(matches) {
 					var newColor = matches[0];
-					confirm(message, 'Are you sure you want to paint ' + roleNames + ' to be ' + newColor + '? Confirm by reacting with \:thumbsup:.', force, function() {
+					await confirm(message, 'Are you sure you want to paint ' + roleNames + ' to be ' + newColor + '? Confirm by reacting with \:thumbsup:.', force, function() {
 						message.channel.send('No confirmation was received.  The painting is canceled.');
 					}, function () {
-						for(var i=0; i<roles.length; i++) {
-							var currRole = roles[i];
-							recolorTo(currRole, newColor).then(function (teamName) {
+						return Promise.all(roles.map(function (currRole) {
+							return recolorTo(currRole, newColor).then(function (teamName) {
 								message.channel.send('Team ' + teamName + ' has been given a new color.');
 							}).catch(function (error) {
 								console.error(error);
 								help(message.channel, ['p']);
 							});
-						}
+						}));
 					});
 				} else {
-					confirm(message, 'Are you sure you want to paint ' + roleNames + ' a new color? Confirm by reacting with \:thumbsup:.', force, function () {
+					await confirm(message, 'Are you sure you want to paint ' + roleNames + ' a new color? Confirm by reacting with \:thumbsup:.', force, function () {
 						message.channel.send('No confirmation was received.  The painting is canceled.');
 					}, function () {
-						for(var i=0; i<roles.length; i++) {
-							var currRole = roles[i];
-							recolor(currRole).then(function (teamName) {
-								message.channel.send('Team ' + teamName + ' has been given a new color."');
+						return Promise.all(roles.map(function (currRole) {
+							return recolor(currRole).then(function (teamName) {
+								message.channel.send('Team ' + teamName + ' has been given a new color.');
 							}).catch(function (error) {
 								console.error(error);
 								help(message.channel, ['p']);
 							});
-						}
+						}));
 					});
 				}
 			} catch (e) {
@@ -1440,18 +1550,18 @@ var processCommand = async function (command, message) {
 						throw 'too many channels in a category for delete';
 					}
 				}
-				confirm(message, 'Are you sure you want to delete the specified room[s]? Confirm by reacting with \:thumbsup:.', force, function () {
+				await confirm(message, 'Are you sure you want to delete the specified room[s]? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The deletion is cancelled.');
 				}, function () {
-					for (const text of channels) {
-						deleteRoom(text).then(function (name) {
+					return Promise.all(channels.map(function (text) {
+						return deleteRoom(text).then(function (name) {
 							message.channel.send('Room "' + name + '" has been deleted.');
 						}).catch(function (error) {
 							console.error(error);
 							message.channel.send('Room "' + text + '" could not be deleted. Please delete it manually.')
 							help(message.channel, ['d']);
 						});
-					}
+					}));
 				});
 			} catch (e) {
 				console.error(e);
@@ -1505,7 +1615,7 @@ var processCommand = async function (command, message) {
 				var content = command.substr(command.indexOf(' ') + 1).trim();
 				var names = content.split(/["“”]/g);
 				if(names.length < 2) {
-					help(message.channel, ['b', 'n', 'm']);
+					help(message.channel, ['b', 'n']);
 					return;
 				}
 				for (var i = 1; i < names.length; i+= 2) {
@@ -1524,9 +1634,18 @@ var processCommand = async function (command, message) {
 						message.channel.send("The team name \"" + name + "\" doesn't meet these requirements.")
 						return;
 					}
+					// The lounge's text channel is "<name>-lounge-text", which must fit in Discord's 100 characters
+					if(name.length >= MAX_NAME_LENGTH) {
+						message.channel.send("Team names must be less than " + MAX_NAME_LENGTH + " characters long. The team name \"" + name + "\" is " + name.length + " characters.");
+						return;
+					}
+					if(roleNameInUse(message.guild, name) || names.slice(1, i).some((other, j) => j % 2 === 0 && other.toLowerCase() === name.toLowerCase())) {
+						message.channel.send("The team name \"" + name + "\" is already used by a role in this server, by a role the bot needs, or by another team in this command. No teams were created.");
+						return;
+					}
 				}
 
-				confirm(message, 'Are you sure you want to create the team[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
+				await confirm(message, 'Are you sure you want to create the team[s] ' + content + '? Confirm by reacting with \:thumbsup:.', force, function () {
 					message.channel.send('No confirmation was received. The new team creation is cancelled.');
 				}, async function () {
 					try {
@@ -1542,7 +1661,7 @@ var processCommand = async function (command, message) {
 							}).catch(function (error) {
 								console.error(error);
 								message.channel.send('Team "' + name + '" could not be created. Please try using a different name.');
-								help(message.channel, ['b', 'n', 'm']);
+								help(message.channel, ['b', 'n']);
 							});
 						}
 						//sync all voice channels with category, then
@@ -1551,10 +1670,8 @@ var processCommand = async function (command, message) {
 						// I could just disable voice channel chat.
 						message.channel.send("Adjusting permissions in hub ...");
 						var generalChannel = await message.channel.guild.channels.cache.find(channel => channel.name === "general");
-						message .channel.send("--Syncing voice channels to category");
-						await syncVoiceChannelsToCategory(generalChannel.parent);
-						message .channel.send("--Disabling voice chat channels");
-						await disableVoiceChannelChatInCategory(generalChannel.parent);
+						message.channel.send("--Syncing hub channels to category");
+						await syncHubChannels(generalChannel.parent);
 						message.channel.send("Done");
 					} catch (e) {
 						console.log(e.stack);
@@ -1563,7 +1680,7 @@ var processCommand = async function (command, message) {
 				});
 			} catch (e) {
 				console.error(e);
-				help(message.channel, ['b', 'n', 'm']);
+				help(message.channel, ['b', 'n']);
 			}
 		/*} else if (command.indexOf('.m') === 0 && hasRole(message.member, 'Control Room')) {
 			try {
@@ -1581,12 +1698,12 @@ var processCommand = async function (command, message) {
 					}).catch(function (error) {
 						console.error(error);
 						message.channel.send('The teams could not be created.');
-						help(message.channel, ['b', 'n', 'm']);
+						help(message.channel, ['b', 'n']);
 					});
 				});
 			} catch (e) {
 				console.error(e);
-				help(message.channel, ['b', 'n', 'm']);
+				help(message.channel, ['b', 'n']);
 			}*/
 			/*} else if (command.indexOf('.b') === 0 && hasRole(message.member, 'Control Room')) {
 				var bitrate = NaN;
@@ -1627,16 +1744,17 @@ var processCommand = async function (command, message) {
 					}
 					userNames += " and " + users[users.length-1].toString();
 				}
-				confirm(message, "DANGER!  Are you sure you want to grant users(s) " + userNames + " Control Room privileges? Confirm by reacting with \:thumbsup:.", force, function() {
+				await confirm(message, "DANGER!  Are you sure you want to grant users(s) " + userNames + " Control Room privileges? Confirm by reacting with \:thumbsup:.", force, function() {
 					message.channel.send("No confirmation was received.  The granting of privileges was cancelled.");
-				}, function() {
-
-					for(var i=0; i<users.length; i++) {
-						users[i].roles.add(role).catch(function(error) {
+				}, async function() {
+					for (const user of users) {
+						try {
+							await user.roles.add(role);
+							await message.channel.send("Added " + user.toString() + " to Control Room.");
+						} catch (error) {
 							console.error(error);
-							help(message.channel, ['g','u']);
-						});
-						message.channel.send("Added " + users[i].toString() + " to Control Room.");
+							message.channel.send("Could not add " + user.toString() + " to Control Room.").catch(console.error);
+						}
 					}
 				});
 			} catch(e) {
@@ -1668,16 +1786,17 @@ var processCommand = async function (command, message) {
 					}
 					userNames += " and " + users[users.length-1].toString();
 				}
-				confirm(message, "Are you sure you want to remove users(s) " + userNames + " from Control Room privileges? Confirm by reacting with \:thumbsup:.", force, function() {
+				await confirm(message, "Are you sure you want to remove users(s) " + userNames + " from Control Room privileges? Confirm by reacting with \:thumbsup:.", force, function() {
 					message.channel.send("No confirmation was received.  The revocation of privileges was cancelled.");
-				}, function() {
-
-					for(var i=0; i<users.length; i++) {
-						users[i].roles.remove(role).catch(function(error) {
+				}, async function() {
+					for (const user of users) {
+						try {
+							await user.roles.remove(role);
+							await message.channel.send("Removed " + user.toString() + " from Control Room.");
+						} catch (error) {
 							console.error(error);
-							help(message.channel, ['g', 'u']);
-						});
-						message.channel.send("Removed " + users[i].toString() + " from Control Room.");
+							message.channel.send("Could not remove " + user.toString() + " from Control Room.").catch(console.error);
+						}
 					}
 				});
 			} catch(e) {
@@ -1685,13 +1804,13 @@ var processCommand = async function (command, message) {
 				help(message.channel, ['g','u']);
 			}
 		} else if (command.indexOf('.l') === 0 && hasRole(message.member, 'Control Room')) {
-			confirm(message, 'Are you sure you want to lock down the lounge?  Confirm by reacting with \:thumbsup:.', force,
+			await confirm(message, 'Are you sure you want to lock down the lounge?  Confirm by reacting with \:thumbsup:.', force,
 							function () {
 								message.channel.send("No confirmation was received.  Locking the lounge canceled.");
 							},
 							function() {
 								message.channel.send("Locking down the lounge.  This could take a while . . . ");
-								lockdownLounge(message.channel.guild, message).then(function() {
+								return lockdownLounge(message.channel.guild, message).then(function() {
 									message.channel.send('Lounge is locked down.');
 								}).catch(function (error) {
 									console.error(error);
@@ -1700,13 +1819,13 @@ var processCommand = async function (command, message) {
 								});
 							});
 		} else if (command.indexOf('.o') === 0 && hasRole(message.member, 'Control Room')) {
-			confirm(message, 'Are you sure you want to open the lounge?  Confirm by reacting with \:thumbsup:.', force,
+			await confirm(message, 'Are you sure you want to open the lounge?  Confirm by reacting with \:thumbsup:.', force,
 							function() {
 								message.channel.send('No confirmation received.  Unlocking the lounge canceled.');
 							},
 							function() {
 								message.channel.send("Unlocking the lounge.  This could take a while . . . ");
-								unlockLounge(message.channel.guild, message).then(function() {
+								return unlockLounge(message.channel.guild, message).then(function() {
 									message.channel.send('Lounge is unlocked.');
 								}).catch(function (error) {
 									console.error(error);

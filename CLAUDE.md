@@ -19,7 +19,7 @@ The bot reads its token from `config.json` (`{ "BOT_TOKEN": "..." }`). `config.j
 
 Everything lives in a single file, `tournament.js`:
 
-- **Entry points**: `client.on('messageCreate')` splits each message on newlines and runs each line through `processCommand`, so several commands can be pasted in one message. A `client.on('raw')` handler deletes any poll not posted by a Control Room member and reports it to `#bot-commands`.
+- **Entry points**: `client.on('messageCreate')` splits each message on newlines and runs each line through `processCommand`, so several commands can be pasted in one message. They run one at a time: `processCommand` awaits `confirm()`, so a confirm success callback must **return** (or await) its work, or the next line will start while it is still changing the same room's permissions. A `client.on('raw')` handler deletes any poll not posted by a Control Room member and reports it to `#bot-commands`.
 - **`processCommand`**: one big `if/else` chain matching on `command.indexOf('.x') === 0`. Each command has a short form (`.a`) and a natural-language alias (`.add`). Mentions are parsed by `getMentions` into `{roles, channels, users}`. A `--force` flag skips the 👍-reaction confirmation implemented in `confirm()`.
 - **Permissions model**: `.w` (written secret code, only in channels with "lounge" in the name) is available to everyone. All other commands require the Control Room or Staff role, or the guild owner; some commands additionally check for Control Room only. Roles are identified **by name** (`hasRole(member, 'Control Room')`), so renaming roles breaks the bot.
 - **`helpSections`**: the help text for each command, keyed by its short letter. Update it when you add or change a command.
