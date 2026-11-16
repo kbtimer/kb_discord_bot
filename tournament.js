@@ -1528,13 +1528,14 @@ var byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }
 // Reads the server's current roles and channels (two API calls) and returns
 // { rooms: [{category, teams}], unassigned: [team roles in no room], loungeState, problems: [{text, roomIds}] }.
 // roomIds lists the competition rooms a problem concerns, so `.v #room` can show just that room's problems.
+// everyRoom marks a server-wide problem that makes every room's report unreliable (e.g. no Coach role, so no teams are found).
 var verifyServer = async function (guild) {
 	await guild.roles.fetch();
 	await guild.channels.fetch();
 	var everyoneId = guild.roles.everyone.id;
 	var problems = [];
-	var problem = function (text, rooms = []) {
-		problems.push({ text: text, roomIds: rooms.map(room => room.id) });
+	var problem = function (text, rooms = [], everyRoom = false) {
+		problems.push({ text: text, roomIds: rooms.map(room => room.id), everyRoom: everyRoom });
 	};
 	// Channels whose overwrites were checked against their category, so the voice chat check below skips them
 	var checked = new Set();
@@ -1552,9 +1553,9 @@ var verifyServer = async function (guild) {
 	for (var name of RESERVED_ROLE_NAMES.filter(name => name !== '@everyone')) {
 		var count = guild.roles.cache.filter(role => role.name === name).size;
 		if (count === 0) {
-			problem('The "' + name + '" role is missing. The bot finds roles by name, so a renamed role counts as missing.');
+			problem('The "' + name + '" role is missing. The bot finds roles by name, so a renamed role counts as missing.', [], true);
 		} else if (count > 1) {
-			problem('There are ' + count + ' roles named "' + name + '". The bot finds roles by name, so there should be one.');
+			problem('There are ' + count + ' roles named "' + name + '". The bot finds roles by name, so there should be one.', [], true);
 		}
 	}
 	var coachPos = await coachPosition(guild);
@@ -1708,12 +1709,31 @@ var verifyServer = async function (guild) {
 			' ' + (hubLounges.length === 1 ? 'is' : 'are') + ' still in the Hub. Run `.l` or `.o` again.');
 	}
 	if (hub) {
+		if (!deniesView(hub, everyoneId)) {
+			problem('Everyone can see the Hub, including people with no team. Deny @everyone View Channel on the "Hub" category.');
+		}
 		checkSynced(hub, [...hub.children.cache.values()].filter(channel => channel.name !== 'general' && channel.name !== 'announcements'),
 			'the Hub', 'Running `.n` with the name of any existing team re-syncs the Hub.');
 	}
 	if (lockdown) {
 		if (!deniesView(lockdown, everyoneId)) {
 			problem('Everyone can see "Lockdown Lounge". Run `.l` again to fix it.');
+		}
+		// .l gives Lockdown Lounge only the @everyone deny, so any other entry is a hand edit. One that lets
+		// a role or person see it keeps them in the lounge during lockdown (Control Room sees it anyway as admin).
+		for (var overwrite of lockdown.permissionOverwrites.cache.values()) {
+			if (overwrite.id === everyoneId || !overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
+				continue;
+			}
+			var member = overwrite.type === OverwriteType.Member ? guild.members.cache.get(overwrite.id) : null;
+			var role = overwrite.type === OverwriteType.Role ? guild.roles.cache.get(overwrite.id) : null;
+			if (overwrite.type === OverwriteType.Role && !role) {
+				continue; // a deleted role's leftover entry does nothing
+			}
+			var who = role ? (teamIds.has(role.id) ? 'team ' + role.name : 'the "' + role.name + '" role') :
+				'one person, ' + (member ? member.displayName : 'user ID ' + overwrite.id);
+			problem('"Lockdown Lounge" lets ' + who + ' see it, so the lounge isn\'t locked for them. ' +
+				'Remove it by hand in the category\'s permissions if it shouldn\'t be there.');
 		}
 		checkSynced(lockdown, lockedLounges, '"Lockdown Lounge"', 'Run `.l` again to fix it.');
 	}
@@ -1761,7 +1781,7 @@ const MAX_VERIFY_PROBLEMS = 20;
 
 // The lines of the .v report: problems first, then the room board. With onlyRoom, just that room.
 var verifyReport = function (result, onlyRoom) {
-	var problems = onlyRoom ? result.problems.filter(p => p.roomIds.includes(onlyRoom.id)) : result.problems;
+	var problems = onlyRoom ? result.problems.filter(p => p.everyRoom || p.roomIds.includes(onlyRoom.id)) : result.problems;
 	var rooms = onlyRoom ? result.rooms.filter(room => room.category.id === onlyRoom.id) : result.rooms;
 	var lines = [];
 	if (!onlyRoom) {
@@ -1785,6 +1805,11 @@ var verifyReport = function (result, onlyRoom) {
 	}
 	if (!onlyRoom && result.teamCount > 0) {
 		lines.push('**Not in a room:** ' + (result.unassigned.length > 0 ? result.unassigned.map(team => team.name).join(', ') : 'none'));
+	}
+	var elsewhere = result.problems.length - problems.length;
+	if (onlyRoom && elsewhere > 0) {
+		lines.push('There ' + (elsewhere === 1 ? 'is 1 other problem' : 'are ' + elsewhere + ' other problems') +
+			' elsewhere on the server. Run `.v` to see ' + (elsewhere === 1 ? 'it' : 'them') + '.');
 	}
 	return lines;
 }
