@@ -1584,6 +1584,38 @@ var verifyServer = async function (guild) {
 	if (!categories.some(category => category.name === 'Control Room')) {
 		problem('The "Control Room" category is missing.');
 	}
+
+	// Control Room and Coaches Lounge never change after .i, so anyone else seeing them is a hand edit.
+	// permissionsFor gives each role's effective access (its server permissions, then @everyone's entry,
+	// then its own), so it catches both a missing @everyone deny and an allow for one role. Teams with
+	// Administrator are left out because they're reported above.
+	var rolesNamed = name => [...guild.roles.cache.values()].filter(role => role.name === name);
+	var plainTeams = teams.filter(team => !team.permissions.has(PermissionFlagsBits.Administrator));
+	var privateAreas = [
+		{ name: 'control room', outsiders: [...rolesNamed('Spectator'), ...rolesNamed('Coach'), ...plainTeams] },
+		{ name: 'coaches lounge', outsiders: [...rolesNamed('Spectator'), ...plainTeams] }
+	];
+	for (var area of privateAreas) {
+		for (var category of categories.filter(category => category.name.trim().toLowerCase() === area.name)) {
+			var places = [category, ...[...category.children.cache.values()].sort((a, b) => a.rawPosition - b.rawPosition)];
+			var placeName = place => place === category ? 'the category' : '#' + place.name;
+			var canSee = (place, role) => place.permissionsFor(role).has(PermissionFlagsBits.ViewChannel);
+			var seenByEveryone = places.filter(place => canSee(place, guild.roles.everyone));
+			if (seenByEveryone.length > 0) {
+				problem('Everyone can see ' + listNames(seenByEveryone.map(placeName)) + ' in "' + category.name + '". ' +
+					'Deny @everyone View Channel there by hand.');
+			}
+			// Whatever everyone can see is already reported, so don't repeat it for every role
+			for (var role of area.outsiders) {
+				var seen = places.filter(place => !seenByEveryone.includes(place) && canSee(place, role));
+				if (seen.length > 0) {
+					var who = teamIds.has(role.id) ? 'Team ' + role.name : 'The "' + role.name + '" role';
+					problem(who + ' can see ' + listNames(seen.map(placeName)) + ' in "' + category.name + '". ' +
+						'Remove its View Channel permission there by hand.');
+				}
+			}
+		}
+	}
 	var generalChannel = guild.channels.cache.find(channel => channel.name === 'general');
 	var hub = generalChannel?.parent?.name === 'Hub' ? generalChannel.parent : null;
 	if (!hub) {
@@ -1924,7 +1956,7 @@ var processCommand = async function (command, message) {
 		var loungeIndex = channelName.indexOf("-lounge");
 		var greeting = loungeIndex > 0 ? 'Hello ' + channelName.substring(0, loungeIndex) + '!' : 'Hello!';
 
-		message.channel.send(greeting + " Your secret code for today's written is " + code);
+		await message.channel.send(greeting + " Your secret code for today's written is " + code);
 
 	} else if (isStaffCommand(command, message)) {
 
@@ -2915,7 +2947,17 @@ client.on('messageCreate', async function (message) {
 	if (message.author.bot || !message.guild) {
 		return;
 	}
-	var lines = message.content.split('\n');
+	// Answer at most one `.w` per message: the code is the same every time, and anyone can use `.w`, so a
+	// message of hundreds of `.w` lines would otherwise flood the lounge with hundreds of replies
+	var answeredWritten = false;
+	var lines = message.content.split('\n').filter(function (line) {
+		if (!isWrittenCodeCommand(line, message)) {
+			return true;
+		}
+		var first = !answeredWritten;
+		answeredWritten = true;
+		return first;
+	});
 	// Ordinary chat and `.w` don't change permissions, so they don't wait behind staff commands
 	if (lines.some(line => isStaffCommand(line, message))) {
 		await runInGuildQueue(message, () => runCommandLines(lines, message));
