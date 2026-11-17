@@ -2915,6 +2915,8 @@ var processCommand = async function (command, message) {
 				await message.channel.send((onlyRoom ? '"' + onlyRoom.name + '"' : 'That channel') + ' is not a competition room. ' +
 					'`.v #room-text` checks one room; `.v` alone checks the whole server.');
 			} else {
+				// No confirmation prompt, so react the way a --force command does to show the check has started
+				message.react('👍').catch(console.error);
 				try {
 					var result = await verifyServer(message.guild);
 					if (result.problems.length > 0) {
