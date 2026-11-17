@@ -123,6 +123,10 @@ const RESERVED_ROLE_NAMES = ['@everyone', 'Control Room', 'Staff', 'Spectator', 
 // Categories that .a/.r/.t refuse to touch, so .c can't create rooms with these names (lowercase)
 const RESERVED_CATEGORY_NAMES = ['control room', 'hub'];
 
+// A team's lounge is "<Team> Lounge", so these names would make a lounge named like the bot's own
+// "Lockdown Lounge" or "Coaches Lounge" category, which .l/.o and .v find by name (lowercase)
+const RESERVED_TEAM_NAMES = ['lockdown', 'coaches'];
+
 // True if category is a room made by .c: two channels, and not Control Room, Hub, or a lounge (team lounges,
 // Coaches Lounge, Lockdown Lounge). Team lounges also have exactly two channels, so the name check matters.
 // .c refuses room names containing "lounge", so this never rejects a real room.
@@ -2549,6 +2553,10 @@ var processCommand = async function (command, message) {
 					// The lounge's text channel is "<name>-lounge-text", which must fit in Discord's 100 characters
 					if(name.length >= MAX_TEAM_NAME_LENGTH) {
 						message.channel.send("Team names must be less than " + MAX_TEAM_NAME_LENGTH + " characters long. The team name \"" + name + "\" is " + name.length + " characters.");
+						return;
+					}
+					if(RESERVED_TEAM_NAMES.includes(name.toLowerCase())) {
+						message.channel.send("A team can't be named \"" + name + "\", because its lounge would be named \"" + name + " Lounge\", which the bot uses for its own category. No teams were created.");
 						return;
 					}
 					var duplicate = names.slice(0, i).some(other => other.toLowerCase() === name.toLowerCase());
