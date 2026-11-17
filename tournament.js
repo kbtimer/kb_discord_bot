@@ -1991,9 +1991,20 @@ const COMMAND_NAMES = {
 
 // Returns the short name of the command a line starts with, or null. The whole word must match, so `.done`
 // isn't `.d` and `.e.g.` isn't `.e`. Mentions and quotes can follow without a space (`.a<@&123>`).
+// The command word at the start of a line, e.g. ".c" or ".create-rooms". It ends at anything that can't be
+// part of a name, so `.c"Room1"` and a tab after the command both count.
+const COMMAND_PATTERN = /^\.([a-z]+(?:-[a-z]+)*)(?![a-z0-9.\-])/i;
+
 var commandName = function (line) {
-	var match = line.match(/^\.([a-z]+(?:-[a-z]+)*)(?![a-z0-9.\-])/i);
+	var match = line.match(COMMAND_PATTERN);
 	return match ? COMMAND_NAMES[match[1].toLowerCase()] ?? null : null;
+}
+
+// Everything after the command word, trimmed. Splitting at the first space instead would start inside
+// a quoted name in `.c"A" "B"`, which then silently drops "A".
+var commandArgs = function (line) {
+	var match = line.match(COMMAND_PATTERN);
+	return (match ? line.slice(match[0].length) : line).trim();
 }
 
 var isWrittenCodeCommand = function (command, message) {
@@ -2358,7 +2369,7 @@ var processCommand = async function (command, message) {
 			}
 		} else if (cmd === 'c' && hasRole(message.member, 'Control Room')) {
 			try {
-				var content = command.substr(command.indexOf(' ') + 1).trim();
+				var content = commandArgs(command);
 				var names = parseQuotedNames(content);
 				if (!names) {
 					message.channel.send("Put each room name in quotation marks, with nothing but spaces between them, like `\"Name One\" \"Name Two\"`. Check for a missing quotation mark. No rooms were created.");
@@ -2613,7 +2624,7 @@ var processCommand = async function (command, message) {
 				}*/
 		} else if (cmd === 'n' && hasRole(message.member, 'Control Room')) {
 			try {
-				var content = command.substr(command.indexOf(' ') + 1).trim();
+				var content = commandArgs(command);
 				var names = parseQuotedNames(content);
 				if (!names) {
 					message.channel.send("Put each team name in quotation marks, with nothing but spaces between them, like `\"Name One\" \"Name Two\"`. Check for a missing quotation mark. No teams were created.");
