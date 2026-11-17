@@ -3101,7 +3101,8 @@ client.on('raw', async function(raw) {
 			console.log(msgString);
 			let botChannel = guild?.channels?.cache?.find(channel => channel.name === "bot-commands");
 			await msg?.delete();
-			await botChannel?.send(msgString);
+			// The poll's text is the poster's, so it may contain <@id> mentions; log it without pinging anyone
+			await botChannel?.send({ content: msgString, allowedMentions: { parse: [] } });
 		}
 	} catch (e) {
 		console.error('Error handling poll:', e);
