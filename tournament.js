@@ -1521,6 +1521,29 @@ var teamPermissionGaps = function (category, team, readHistory) {
 
 var byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
 
+// True if member's roles alone let them see place, leaving out any entry set for them personally. Discord applies
+// the member's server permissions, then the place's @everyone entry, then their roles' entries together (a deny,
+// then an allow, so any allow wins), then their own entry. The owner and Administrator see everything.
+var rolesLetSee = function (place, member) {
+	if (member.id === place.guild.ownerId || member.permissions.has(PermissionFlagsBits.Administrator)) {
+		return true;
+	}
+	var view = PermissionFlagsBits.ViewChannel;
+	var overwrites = place.permissionOverwrites.cache;
+	var canSee = member.permissions.has(view);
+	var everyone = overwrites.get(place.guild.roles.everyone.id);
+	if (everyone?.deny.has(view)) canSee = false;
+	if (everyone?.allow.has(view)) canSee = true;
+	var roleEntries = [...member.roles.cache.keys()].filter(id => id !== place.guild.roles.everyone.id)
+		.map(id => overwrites.get(id)).filter(Boolean);
+	if (roleEntries.some(overwrite => overwrite.deny.has(view))) canSee = false;
+	if (roleEntries.some(overwrite => overwrite.allow.has(view))) canSee = true;
+	return canSee;
+}
+
+// Discord error codes for a user who isn't in the server (or no longer exists)
+const UNKNOWN_MEMBER_CODES = [10007, 10013];
+
 // Reads the server's current roles and channels (two API calls) and returns
 // { rooms: [{category, teams}], unassigned: [team roles in no room], loungeState, problems: [{text, roomIds}] }.
 // roomIds lists the competition rooms a problem concerns, so `.v #room` can show just that room's problems.
@@ -1553,6 +1576,57 @@ var verifyServer = async function (guild) {
 			problem('There are ' + count + ' roles named "' + name + '". The bot finds roles by name, so there should be one.', [], true);
 		}
 	}
+	// The bot never sets permissions for one person, so look up everyone who has some: whether they're still in
+	// the server, and which roles they have, tells staff from outsiders. The member cache may not hold them all.
+	var notInServer = new Set();
+	var lookupFailed = new Set();
+	var personalIds = new Set([...guild.channels.cache.values()].flatMap(channel => [...channel.permissionOverwrites.cache.values()])
+		.filter(overwrite => overwrite.type === OverwriteType.Member && !guild.members.cache.has(overwrite.id)).map(overwrite => overwrite.id));
+	await runWithConcurrency([...personalIds], CHANNEL_UPDATE_CONCURRENCY, async function (id) {
+		try {
+			await guild.members.fetch(id);
+		} catch (error) {
+			(UNKNOWN_MEMBER_CODES.includes(error.code) ? notInServer : lookupFailed).add(id);
+		}
+	});
+	var personName = function (id) {
+		var member = guild.members.cache.get(id);
+		return member ? member.displayName : 'user ID ' + id + (notInServer.has(id) ? ' (not in the server)' : '');
+	};
+	// In an area only some roles may see, report each person whose own entry lets them see a place their roles
+	// alone don't: someone who isn't staff, or a Staff member seeing a channel kept from Staff (#control-room).
+	// An entry for a staff member who could see the place anyway is harmless and isn't reported.
+	var checkPersonalAccess = function (category, children, areaLabel) {
+		var places = [category, ...children];
+		var placeName = place => place === category ? 'the category' : '#' + place.name;
+		var seenBy = new Map();
+		for (var place of places) {
+			for (var overwrite of place.permissionOverwrites.cache.values()) {
+				if (overwrite.type !== OverwriteType.Member) {
+					continue;
+				}
+				var member = guild.members.cache.get(overwrite.id);
+				var unexpected = member ? place.permissionsFor(member).has(PermissionFlagsBits.ViewChannel) && !rolesLetSee(place, member) :
+					overwrite.allow.has(PermissionFlagsBits.ViewChannel);
+				if (unexpected) {
+					seenBy.set(overwrite.id, [...(seenBy.get(overwrite.id) ?? []), place]);
+				}
+			}
+		}
+		for (var [id, seen] of seenBy) {
+			var where = listNames(seen.map(placeName)) + ' in ' + areaLabel;
+			if (guild.members.cache.has(id)) {
+				problem(personName(id) + ' can see ' + where + ' only because of permissions set for them personally; their roles don\'t allow it. ' +
+					'Remove the entry by hand if they shouldn\'t have access.');
+			} else if (notInServer.has(id)) {
+				problem('User ID ' + id + ', who isn\'t in the server, has permissions set letting them see ' + where + '. ' +
+					'They\'ll have that access if they rejoin, so remove the entry by hand.');
+			} else {
+				problem('Permissions set for user ID ' + id + ' let them see ' + where + ', and the bot couldn\'t look them up to check their roles. Run `.v` again.');
+			}
+		}
+	};
+
 	var coachPos = await coachPosition(guild);
 	var teams = coachPos < 0 ? [] : [...guild.roles.cache.values()].filter(role => isTeamRole(role, coachPos)).sort(byName);
 	var teamIds = new Set(teams.map(team => team.id));
@@ -1596,12 +1670,30 @@ var verifyServer = async function (guild) {
 	var rolesNamed = name => [...guild.roles.cache.values()].filter(role => role.name === name);
 	var plainTeams = teams.filter(team => !team.permissions.has(PermissionFlagsBits.Administrator));
 	var privateAreas = [
-		{ name: 'control room', outsiders: [...rolesNamed('Spectator'), ...rolesNamed('Coach'), ...plainTeams] },
-		{ name: 'coaches lounge', outsiders: [...rolesNamed('Spectator'), ...plainTeams] }
+		{ name: 'control room', outsiders: [...rolesNamed('Spectator'), ...rolesNamed('Coach'), ...plainTeams], expected: ['Control Room', 'Staff'] },
+		{ name: 'coaches lounge', outsiders: [...rolesNamed('Spectator'), ...plainTeams], expected: ['Control Room', 'Staff', 'Coach'] }
 	];
 	for (var area of privateAreas) {
 		for (var category of categories.filter(category => category.name.trim().toLowerCase() === area.name)) {
-			var places = [category, ...[...category.children.cache.values()].sort((a, b) => a.rawPosition - b.rawPosition)];
+			var children = [...category.children.cache.values()].sort((a, b) => a.rawPosition - b.rawPosition);
+			var places = [category, ...children];
+			checkPersonalAccess(category, children, '"' + category.name + '"');
+			// .i gives only staff roles access here, so an entry letting any other role see a place is a hand edit.
+			// The outsider roles (teams, Spectator, Coach) are checked by their effective access below instead.
+			var unexpectedRoles = new Map();
+			for (var place of places) {
+				for (var overwrite of place.permissionOverwrites.cache.values()) {
+					var role = overwrite.type === OverwriteType.Role ? guild.roles.cache.get(overwrite.id) : null;
+					if (role && role.id !== everyoneId && !role.managed && overwrite.allow.has(PermissionFlagsBits.ViewChannel) &&
+							!area.expected.includes(role.name) && !area.outsiders.includes(role) && !teamIds.has(role.id)) {
+						unexpectedRoles.set(role, [...(unexpectedRoles.get(role) ?? []), place]);
+					}
+				}
+			}
+			for (var [role, seen] of unexpectedRoles) {
+				problem('The "' + role.name + '" role is allowed to see ' + listNames(seen.map(place => place === category ? 'the category' : '#' + place.name)) +
+					' in "' + category.name + '". Only staff roles should be. Remove it by hand if it shouldn\'t be there.');
+			}
 			var placeName = place => place === category ? 'the category' : '#' + place.name;
 			var canSee = (place, role) => place.permissionsFor(role).has(PermissionFlagsBits.ViewChannel);
 			var seenByEveryone = places.filter(place => canSee(place, guild.roles.everyone));
@@ -1643,9 +1735,8 @@ var verifyServer = async function (guild) {
 		}
 		for (var overwrite of category.permissionOverwrites.cache.values()) {
 			if (overwrite.type === OverwriteType.Member) {
-				var member = guild.members.cache.get(overwrite.id);
 				problem(label[0].toUpperCase() + label.slice(1) + ' has permissions set for one person, ' +
-					(member ? member.displayName : 'user ID ' + overwrite.id) + ' (`.e` would remove them).', [category]);
+					personName(overwrite.id) + ' (`.e` would remove them).', [category]);
 				continue;
 			}
 			var role = guild.roles.cache.get(overwrite.id);
@@ -1716,13 +1807,12 @@ var verifyServer = async function (guild) {
 				}
 				continue;
 			}
-			var member = overwrite.type === OverwriteType.Member ? guild.members.cache.get(overwrite.id) : null;
 			var role = overwrite.type === OverwriteType.Role ? guild.roles.cache.get(overwrite.id) : null;
 			if (overwrite.type === OverwriteType.Role && !role) {
 				continue; // a deleted role's leftover entry does nothing
 			}
 			var who = role ? (teamIds.has(role.id) ? 'team ' + role.name : 'the "' + role.name + '" role') :
-				'one person, ' + (member ? member.displayName : 'user ID ' + overwrite.id);
+				'one person, ' + personName(overwrite.id);
 			var fix = role && teamIds.has(role.id) ? '`.r` the team from the lounge' : 'Remove it by hand in the category\'s permissions';
 			problem(label + ' is private to its team but has permissions set for ' + who + '. ' + fix + ' if it shouldn\'t be there.');
 		}
@@ -1744,6 +1834,7 @@ var verifyServer = async function (guild) {
 		if (!deniesView(hub, everyoneId)) {
 			problem('Everyone can see the Hub, including people with no team. Deny @everyone View Channel on the "Hub" category.');
 		}
+		checkPersonalAccess(hub, [...hub.children.cache.values()].sort((a, b) => a.rawPosition - b.rawPosition), 'the Hub');
 		checkSynced(hub, [...hub.children.cache.values()].filter(channel => channel.name !== 'general' && channel.name !== 'announcements'),
 			'the Hub', 'Running `.n` with the name of any existing team re-syncs the Hub.');
 	}
@@ -1752,21 +1843,21 @@ var verifyServer = async function (guild) {
 			problem('Everyone can see "Lockdown Lounge". Run `.l` again to fix it.');
 		}
 		// .l gives Lockdown Lounge only the @everyone deny, so any other entry is a hand edit. One that lets
-		// a role or person see it keeps them in the lounge during lockdown (Control Room sees it anyway as admin).
+		// a role see it keeps its members in the lounge during lockdown (Control Room sees it anyway as admin).
+		// Entries for one person are checked by checkPersonalAccess, which also covers the lounge channels.
 		for (var overwrite of lockdown.permissionOverwrites.cache.values()) {
-			if (overwrite.id === everyoneId || !overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
+			if (overwrite.id === everyoneId || overwrite.type !== OverwriteType.Role || !overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
 				continue;
 			}
-			var member = overwrite.type === OverwriteType.Member ? guild.members.cache.get(overwrite.id) : null;
-			var role = overwrite.type === OverwriteType.Role ? guild.roles.cache.get(overwrite.id) : null;
-			if (overwrite.type === OverwriteType.Role && !role) {
+			var role = guild.roles.cache.get(overwrite.id);
+			if (!role) {
 				continue; // a deleted role's leftover entry does nothing
 			}
-			var who = role ? (teamIds.has(role.id) ? 'team ' + role.name : 'the "' + role.name + '" role') :
-				'one person, ' + (member ? member.displayName : 'user ID ' + overwrite.id);
+			var who = teamIds.has(role.id) ? 'team ' + role.name : 'the "' + role.name + '" role';
 			problem('"Lockdown Lounge" lets ' + who + ' see it, so the lounge isn\'t locked for them. ' +
 				'Remove it by hand in the category\'s permissions if it shouldn\'t be there.');
 		}
+		checkPersonalAccess(lockdown, [...lockdown.children.cache.values()].sort((a, b) => a.rawPosition - b.rawPosition), '"Lockdown Lounge"');
 		checkSynced(lockdown, lockedLounges, '"Lockdown Lounge"', 'Run `.l` again to fix it.');
 	}
 
