@@ -12,5 +12,36 @@ Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
 
+# Hardening: limit what the bot (or a compromised dependency) can do.
+# Check the result with `systemd-analyze security ckbbot`.
+# The whole filesystem is read-only except the bot's own directory,
+# where it writes MemberUpdateLog.txt.
+ProtectSystem=strict
+ReadWritePaths=/opt/ckbbot
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+UMask=0077
+# No root powers, and no way to regain them.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+# No access to kernel, clock, hostname, or cgroup settings.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+# Only ordinary network sockets, and only common system calls.
+# (MemoryDenyWriteExecute is left off because Node's JIT needs it.)
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
 [Install]
 WantedBy=multi-user.target

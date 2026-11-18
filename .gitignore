@@ -6,7 +6,6 @@
 
 config_official.json
 config.json
-package-lock.json
 /node_modules
 MemberUpdateLog.txt
 /FromDroplet

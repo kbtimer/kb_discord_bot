@@ -47,7 +47,7 @@ ufw allow OpenSSH && ufw --force enable
 useradd --system --create-home --shell /usr/sbin/nologin ckbbot
 git clone https://github.com/kbtimer/kb_discord_bot.git /opt/ckbbot
 chown -R ckbbot: /opt/ckbbot
-cd /opt/ckbbot && sudo -u ckbbot -H npm install --omit=dev
+cd /opt/ckbbot && sudo -u ckbbot -H npm ci --omit=dev --ignore-scripts
 ```
 
 ## 4. Copy the token
@@ -96,7 +96,20 @@ systemctl start ckbbot
 | Fetch the member update log | `scp root@DROPLET_IP:/opt/ckbbot/MemberUpdateLog.txt .` |
 
 If you change `deploy/ckbbot.service`, `update.sh` won't install it: repeat the
-`cp` and `systemctl daemon-reload` from step 5.
+`cp` and `systemctl daemon-reload` from step 5, then `systemctl restart ckbbot`.
+
+## Security notes
+
+- `npm ci` installs exactly the versions in `package-lock.json`, so the droplet
+  never picks up a dependency version you haven't run locally. Update
+  dependencies on your Mac (`npm update`, test, commit the lockfile), not on the
+  droplet. `--ignore-scripts` stops packages from running code at install time;
+  no current dependency needs install scripts.
+- `ckbbot.service` sandboxes the bot: it can write only to `/opt/ckbbot`, has no
+  root privileges, and can't touch kernel or system settings.
+  `systemd-analyze security ckbbot` scores it (lower is safer). If a future
+  change makes the bot fail with `EPERM` or `Operation not permitted` in
+  `journalctl -u ckbbot`, a sandbox setting is the likely cause.
 
 ## After the last tournament
 
